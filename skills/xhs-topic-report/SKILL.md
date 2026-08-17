@@ -1,32 +1,32 @@
 ---
 name: xhs-topic-report
-description: 为指定小红书账号研究、比较和选择选题，生成带证据来源、置信度、局限和人设适配度的 topic_report JSON，并渲染 Markdown/HTML 审阅报告。处理选题分析、竞品爆款拆解、趋势验证、评论洞察和发布优先级请求时使用。
+description: 为指定小红书账号研究、比较和选择选题，保存可追溯的证据、判断把握度、局限和账号定位适配度，并生成中文 HTML 审阅报告。处理选题分析、竞品爆款拆解、趋势验证、评论洞察和发布优先级请求时使用。
 ---
 
 # 小红书选题研究
 
-把选题结论建立在可追溯证据上。JSON 是权威输出；Markdown/HTML 只用于审阅。
+把选题结论建立在可追溯证据上。内部机器文件用于自动化交接，内容负责人只接收中文 HTML 审阅页。所有提问和交付遵守 [人工交互与审阅规范](../xhs-workflow/references/human-interface.md)。
 
 ## 前置条件
 
-1. 要求明确的 run manifest、已获 G1 的 account_strategy 与 persona JSON。
-2. 校验同一 `account_id`、战略引用和批准哈希；账号级战略/persona 可来自其他 run，不以 `run_id` 相同替代显式引用。
+1. 内部要求明确的本轮任务、已确认的账号运营策略与账号定位。
+2. 校验三者属于同一账号且确认仍有效；不以所谓“最新版”替代明确引用。
 3. 把内容负责人本轮明确给出的选题放在最高优先级。历史 experiment、persona 种子和外部趋势只能补充，不能覆盖。
-4. 需要登录态、评论抓取或画像数据时，先确认 G0 数据范围；没有授权则只使用公开或用户提供的数据。
+4. 需要登录状态、评论或受众数据时，先核对启动时确认的数据范围；没有授权则只使用公开资料或内容负责人提供的数据。
 5. 核对 `web_research` 和 `authenticated_platform_control` 能力快照。不可用时只使用内容负责人提供的材料或公开可核对输入，并记录证据缺口。
 
 ## 工作流
 
 1. 保存原始选题清单，不强制补到固定数量；写入 `strategy_artifact_id` 和 `research_mode`。
-2. 试运营 persona 使用 `trial_diversification`，让候选覆盖验证计划中的差异维度，避免所有早期内容同质化。
+2. 试运营定位使用差异化验证方式，让候选覆盖验证计划中的不同维度，避免所有早期内容同质化。
 3. 按 [references/workflow.md](references/workflow.md) 收集需求、趋势、竞品和评论证据。
 4. 为每条证据保存 `evidence_id`、来源、采集时间、局限和可核对 URL/引用。
 5. 只有可核对原文才能保存为 quote；否则写成“观察”或“假设”。
 6. 按相关性、受众需求、证据强度、差异化和可执行性评分。不得强行制造高、中、低分布。
 7. 对每个候选给出置信度、反证、风险和可执行角度；证据不足时降低置信度。
-8. 写入 `topic_report` JSON，状态设为 `review_required`，运行核心 CLI 校验。
-9. 由 JSON 渲染报告，按 [references/quality-checklist.md](references/quality-checklist.md) 自检。
-10. 请内容负责人明确选择 `topic_id` 并执行 G2；未选择不得进入创作。
+8. 写入内部选题记录并标记为待人工确认，运行核心辅助器校验。
+9. 生成中文 HTML 报告，按 [references/quality-checklist.md](references/quality-checklist.md) 自检；不得粘贴原始机器数据。
+10. 请内容负责人按候选标题和核心角度明确选择选题，完成“选题确认”；不得要求其填写内部选题编号。未选择不得进入创作。
 
 ## 禁止事项
 
@@ -38,8 +38,8 @@ description: 为指定小红书账号研究、比较和选择选题，生成带�
 
 ## 输出
 
-- `artifacts/<account_id>/topic_report/<artifact_id>.json`
-- `renders/<account_id>/<artifact_id>.md`
-- 可选安全转义的 HTML 审阅视图
+- 机器层：内部选题记录，用于后续创作精确交接。
+- 人工层：`renders/<account_id>/<artifact_id>.html`，展示候选、证据、评分、风险、局限和选择区。
+- 最终回复只提供业务摘要和 HTML 路径，除非内容负责人明确索要技术文件。
 
 标题表达参考 [references/title-formulas.md](references/title-formulas.md)，仅作为候选生成工具，不作为效果承诺。

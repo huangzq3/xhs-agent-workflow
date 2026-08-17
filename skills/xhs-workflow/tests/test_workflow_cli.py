@@ -196,6 +196,15 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertIn("--target", installer)
         self.assertNotIn(".trae/", installer)
 
+    def test_all_skills_require_human_language_and_html_review(self) -> None:
+        skill_files = sorted(SKILL_ROOT.parent.glob("xhs-*/SKILL.md"))
+        self.assertEqual(len(skill_files), 7)
+        for path in skill_files:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(skill=path.parent.name):
+                self.assertIn("human-interface.md", text)
+                self.assertIn("HTML", text)
+
     def test_g0_advances_full_cycle_to_strategy(self) -> None:
         rejected = run_cli("approve", str(self.run_path), "--gate", "G0", "--actor", "owner", "--decision", "approved", expected=2)
         self.assertIn("G0 批准前", rejected.stderr)
@@ -398,6 +407,18 @@ class WorkflowCliTests(unittest.TestCase):
         for fixture in fixtures:
             with self.subTest(artifact_type=fixture["artifact_type"]):
                 self.assertEqual(workflow_cli.validate_artifact(fixture), [])
+                rendered = workflow_cli.html_render(fixture)
+                self.assertNotIn("<pre", rendered)
+                self.assertNotIn("Payload", rendered)
+                for internal_value in (
+                    "assumed",
+                    "trial_diversification",
+                    "review_required",
+                    "acquisition",
+                    "creative",
+                    "click_rate",
+                ):
+                    self.assertNotIn(f">{internal_value}<", rendered)
 
     def test_render_escapes_untrusted_html(self) -> None:
         strategy = self.make_strategy()
@@ -410,6 +431,45 @@ class WorkflowCliTests(unittest.TestCase):
         rendered = output.read_text(encoding="utf-8")
         self.assertNotIn("<script>alert(1)</script>", rendered)
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", rendered)
+
+    def test_human_review_html_uses_chinese_business_language_without_raw_json(self) -> None:
+        strategy_path = self.make_strategy()
+        persona_path = self.make_persona(strategy_path)
+        output = self.root / "renders" / "persona-review.html"
+        run_cli("render", str(persona_path), "--output", str(output))
+        rendered = output.read_text(encoding="utf-8")
+        self.assertIn('<html lang="zh-CN">', rendered)
+        self.assertIn("账号定位确认", rendered)
+        self.assertIn("试运营定位（待验证）", rendered)
+        self.assertIn("页面不展示机器原始数据", rendered)
+        self.assertNotIn("G1", rendered)
+        self.assertNotIn("assumed", rendered)
+        self.assertNotIn("Payload", rendered)
+        self.assertNotIn("<pre", rendered)
+        self.assertNotIn('&quot;mode&quot;', rendered)
+
+    def test_audit_report_is_visual_chinese_html_without_machine_event_dump(self) -> None:
+        self.approve_g0()
+        output = self.root / "renders" / "audit-report.html"
+        run_cli(
+            "audit-report",
+            "--root",
+            str(self.root),
+            "--account-id",
+            "demo_account",
+            "--output",
+            str(output),
+        )
+        rendered = output.read_text(encoding="utf-8")
+        self.assertIn('<html lang="zh-CN">', rendered)
+        self.assertIn("操作与决定时间线", rendered)
+        self.assertIn("人工确认通过", rendered)
+        self.assertIn("启动与授权确认", rendered)
+        self.assertIn("报告不包含机器原始数据", rendered)
+        self.assertNotIn("gate_approved", rendered)
+        self.assertNotIn("event_id", rendered)
+        self.assertNotIn("G0", rendered)
+        self.assertNotIn("<pre", rendered)
 
 
 if __name__ == "__main__":

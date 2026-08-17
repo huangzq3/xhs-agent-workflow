@@ -1,61 +1,62 @@
 ---
 name: xhs-workflow
-description: 以 Agent 无关的运行时能力契约编排小红书账号战略、试运营定位、选题、创作、库存、发布、短期与长尾复盘和实验迭代；管理账号隔离、JSON 数据契约、Human-in-the-loop 门禁和审计。处理启动或继续运营流程、账号阶段判断、库存节奏、审批、发布恢复、长尾待办和工作区校验时使用。
+description: 编排小红书账号策略、试运营定位、选题、创作、库存、发布、短期与长尾复盘和迭代实验；管理账号隔离、机器数据契约、人工确认和审计。处理启动或继续运营流程、账号阶段判断、库存节奏、审批、发布恢复、长尾待办、人工审阅页和工作区校验时使用。
 ---
 
 # 小红书工作流编排
 
-把 JSON artifact 作为唯一机器事实源。只把 Markdown 和 HTML 当作由 JSON 再生成的审阅视图；不得从展示文件反向提取数据驱动下一步。
+内部使用结构化数据作为唯一机器事实源，面向内容负责人只使用其当前语言和中文可视化 HTML。不得把内部字段、阶段号、状态码、JSON 或命令输出直接交给内容负责人。完整规则见 [人工交互与审阅规范](references/human-interface.md)。
 
 ## 不变量
 
-1. 在 G0 前按 [references/runtime-capabilities.md](references/runtime-capabilities.md) 发现当前 Agent 的实际能力并写入 run manifest。不假定 Agent 品牌、Skill 安装路径或工具名称。
-2. 在任何读写前明确 `workspace_root`、`account_id` 和 `run_id`。存在多个候选时停止并请内容负责人选择，不得猜测或使用跨账号“最新文件”。
-3. 只消费符合机器 Schema 和跨字段约束的 JSON artifact。当 Python 3.9+ 可用时优先使用 `scripts/workflow_cli.py validate`。
-4. 保留内容负责人明确输入及来源；不得让历史迭代建议覆盖当前明确要求。
-5. 在高影响操作前验证对应人工门禁。自动生成内容不能代表人工批准。
-6. 每次批准、拒绝、状态变化和异常都追加到 `audit/events.ndjson`。
-7. 发布结果不明确时进入 `unknown`；未经人工判定不得自动重试。
+1. 启动前按 [运行时能力契约](references/runtime-capabilities.md) 核对当前运行工具实际提供且已授权的能力，不根据 Agent 品牌、安装路径或工具名称猜测。
+2. 在任何读写前明确工作区、账号和本轮任务。存在多个候选时，用账号名称、任务目标和时间向内容负责人提问，不要求其选择内部编号。
+3. 内部只消费符合 [数据契约](references/data-contracts.md) 的机器文件；人工审阅页不得成为下游机器输入。
+4. 保留内容负责人本轮明确输入及来源；历史建议不能覆盖当前明确要求。
+5. 高影响操作前必须获得对应的人工确认。自动生成内容不代表人工同意。
+6. 每次确认、退回、状态变化和异常都追加到内部审计记录；不得把原始审计数据直接展示给内容负责人。
+7. 无法确定是否发布成功时，向内容负责人说明“发布结果待核对”，停止自动重试。
 8. 不得编造评论、指标、亲身经历、授权或测试结果。
-9. 账号战略与内容运行分层：账号级 `account_strategy` 版本控制生命周期、内容目标、发布和测量策略；每个 run 只引用明确版本。
-10. 所有节奏、库存和长尾数字来自账号战略或本轮人工配置；不得写死跨账号阈值。
+9. 账号运营策略与单篇内容运行分层并保留版本，不静默使用所谓“最新版”。
+10. 所有节奏、库存和长尾数字来自账号自己的策略或本轮人工配置，不写死跨账号阈值。
 
 ## 标准流程
 
-1. 建立账号隔离工作区；当 Python 辅助脚本可用时运行 `init`，否则按同一 JSON 契约建立。
-2. 创建带 `run_type` 的本轮 manifest，完成能力发现和数据范围申明，再由内容负责人完成 G0。
-3. `full_cycle` 先创建账号战略；内容类 run 必须显式引用已批准的战略和 persona。规则见 [references/strategy-lifecycle.md](references/strategy-lifecycle.md)。
-4. 按 manifest 的 `current_stage` 调用对应执行 Skill。
-5. 验证执行 Skill 产出的 JSON，将路径登记到 manifest；创作完成后进入 [内容库存](references/inventory-and-cadence.md)。
-6. 用 `render` 生成 Markdown 或 HTML 供人工审阅。
-7. 记录人工决定；只有批准后才能进入下一阶段。
-8. 完成发布后按配置生成短期和长尾测量，再生成 review 和 experiment。
+1. 建立账号隔离工作区并创建本轮运营任务。
+2. 核对当前工具能力、目标账号、允许的数据来源和外部处理范围，生成 HTML 后请求“启动与授权确认”。
+3. 完整运营流程先形成账号运营策略，再形成试运营或已验证的账号定位。
+4. 依次完成选题研究、内容制作、内容库存、发布、数据复盘和迭代实验。
+5. 每个阶段先校验内部机器文件，再生成 HTML 审阅页；最终回复只提供业务摘要和 HTML 路径。
+6. 内容负责人明确确认后才进入下一阶段；退回修改时保留原因并重新生成审阅页。
+7. 发布完成后按账号配置生成短期和长尾复盘安排。
+8. 需要查看整轮操作记录时生成中文 HTML 人工审计报告，不输出原始 JSON 或 NDJSON。
 
-## 阶段与门禁
+## 人工看到的流程
 
-| 阶段 | 执行 Skill | 权威 artifact | 进入下一阶段所需门禁 |
-|---|---|---|---|
-| 账号与范围 | xhs-workflow | run_manifest | G0 运行时能力、账号、数据范围与外部处理授权 |
-| 账号战略 | xhs-workflow | account_strategy | G1 阶段、目标、发布/库存/测量策略批准 |
-| 定位 | xhs-persona | persona | G1 定位事实、试运营假设边界与验证计划批准 |
-| 选题 | xhs-topic-report | topic_report | G2 选题与证据批准 |
-| 创作 | xhs-writer | content | G3 内容、事实、素材权利批准 |
-| 内容库存 | xhs-workflow | inventory_item | 达到 ready 需要有效 G3；发布例外并入 G4 |
-| 发布 | xhs-publish | publication | G4 策略结果、发布预览与目标账号批准 |
-| 采集与复盘 | xhs-content-review | metrics_snapshot、review | G5 短期、信任、长尾和隐私范围批准 |
-| 实验与迭代 | xhs-iterate | experiment | G6 实验或定位/战略变更批准 |
+| 阶段 | 内容负责人审阅什么 | 确认后的动作 |
+|---|---|---|
+| 启动与授权 | 目标账号、工具能力、数据来源、登录状态、外部处理范围 | 启动本轮运营 |
+| 账号运营策略 | 账号阶段、内容目标、发布节奏、库存与复盘规则 | 制定或修订账号定位 |
+| 账号定位 | 身份、受众、差异化、边界和试运营验证计划 | 开始选题研究 |
+| 选题确认 | 候选选题、证据、局限和风险 | 选择选题进入创作 |
+| 内容定稿 | 标题、正文、图片或视频、事实与素材权利 | 加入可发布库存 |
+| 发布前确认 | 目标账号、最终预览、发布时间和规则例外 | 只执行一次发布尝试 |
+| 数据采集范围 | 观察窗口、信任指标、长尾时间点和隐私范围 | 采集并复盘数据 |
+| 迭代实验 | 唯一调整项、指标、观察时间和停止条件 | 投入下一轮验证 |
 
-详细职责、状态和回退规则见 [references/workflow-v2.md](references/workflow-v2.md) 与 [references/hitl-gates.md](references/hitl-gates.md)。运行时适配见 [references/runtime-capabilities.md](references/runtime-capabilities.md)；字段契约见 [references/data-contracts.md](references/data-contracts.md)；机器 Schema 见 [references/schemas/artifact.schema.json](references/schemas/artifact.schema.json)。
+内部阶段、状态与回退规则见 [流程与职责](references/workflow-v2.md) 和 [人工确认机制](references/hitl-gates.md)。内容库存规则见 [内容库存](references/inventory-and-cadence.md)。
 
-## 确定性命令
+## 执行器命令
+
+以下命令只供运行助手使用，不得原样要求内容负责人填写参数：
 
 ```bash
 python3 scripts/workflow_cli.py init --root <workspace> --account-id <id> --display-name <name>
 python3 scripts/workflow_cli.py new-run --root <workspace> --account-id <id> --objective <goal> --actor <human>
 python3 scripts/workflow_cli.py validate <artifact.json>
 python3 scripts/workflow_cli.py approve <artifact.json> --gate G1 --actor <human> --decision approved
-python3 scripts/workflow_cli.py transition <publication.json> --to review_required --actor <agent> --reason <reason>
-python3 scripts/workflow_cli.py render <artifact.json> --format markdown --output <artifact.md>
+python3 scripts/workflow_cli.py render <artifact.json> --output <review.html>
+python3 scripts/workflow_cli.py audit-report --root <workspace> --output <audit.html>
 python3 scripts/workflow_cli.py validate-workspace --root <workspace>
 python3 scripts/portfolio_cli.py new-strategy --run <run.json> --lifecycle-stage trial --stage-confidence low --persona-mode assumed --play-mode undecided --actor <human>
 python3 scripts/portfolio_cli.py new-inventory --run <run.json> --strategy <strategy.json> --persona <persona.json> --objective trust --format text --working-title <title> --actor <agent>
@@ -63,12 +64,12 @@ python3 scripts/portfolio_cli.py check-policy --strategy <strategy.json> --inven
 python3 scripts/portfolio_cli.py long-tail-due --root <workspace>
 ```
 
-命令是可选的确定性辅助器，不是对某个 Agent 的依赖。当运行时不能执行 Python 时，使用它已展示的 JSON/文件能力实现同一 Schema、状态机和 payload hash 规则；无法做到时降级为 `document_only`。不直接手改 `approvals`、发布状态或审计日志。
+当运行工具不能执行 Python 时，仍应遵守同一内部数据契约、状态变化和确认失效规则；无法安全执行时，向内容负责人说明“当前只能生成方案，不能声称已完成自动化闭环”。不得直接手改人工决定、发布状态或审计日志。
 
 ## 失败处理
 
-- 输入缺失或不合法：保持当前阶段，记录错误，不生成伪造补全。
-- 外部工具不可用：声明降级路径；没有安全降级时停止。
-- 发布返回超时、页面状态不确定或远端 ID 缺失：写入 `unknown`。
-- artifact 内容在批准后发生变化：原批准自动失效，重新渲染并请求批准。
-- 定位或生命周期变更：分别新建 persona 或 account_strategy 修订版；review 只能提出建议，旧版不得静默覆盖。
+- 输入缺失：保持当前步骤，用业务语言提出一个具体问题，不展示缺失字段名。
+- 外部工具不可用：说明受影响的业务动作和可选人工方案；没有安全替代时停止。
+- 发布结果不明确：说明“发布结果待核对”，请求内容负责人检查创作中心，不自动重试。
+- 已确认内容发生变化：说明改了什么、原确认为何失效，并重新生成 HTML 审阅页。
+- 定位或账号阶段变化：建立新版本，先展示差异，再请求新的账号定位或运营策略确认。
