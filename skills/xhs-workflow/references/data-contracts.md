@@ -3,7 +3,7 @@
 ## 事实源原则
 
 - JSON 是唯一机器事实源。
-- Markdown/HTML 是可删除、可再生成的审阅视图。
+- 中文 HTML 是可删除、可再生成的人工审阅视图；不得把原始机器数据直接作为人工报告。
 - 图片、视频等二进制资产通过 URI、SHA-256、权利信息引用，不嵌入 artifact。
 - 任何在线表格、数据库和仪表盘都是可选同步目标，不是事实源。
 
@@ -16,7 +16,7 @@
 ├── runs/<run_id>/run.json
 ├── artifacts/<account_id>/<artifact_type>/<artifact_id>.json
 ├── assets/<account_id>/<content_id>/...
-├── renders/<account_id>/<artifact_id>.md|html
+├── renders/<account_id>/<artifact_id>.html
 └── audit/events.ndjson
 ```
 

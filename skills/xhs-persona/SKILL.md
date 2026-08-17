@@ -1,30 +1,32 @@
 ---
 name: xhs-persona
-description: 在已批准账号战略下创建或修订可审计的小红书 persona JSON，区分试运营假设与已验证定位，定义受众、内容支柱、差异化、表达边界和验证计划。处理账号定位、人设定位、赛道选择、受众定义、试运营假设或定位修订时使用。
+description: 在已确认的账号运营策略下创建或修订可审计的小红书账号定位，区分试运营假设与已验证定位，定义受众、内容支柱、差异化、表达边界和验证计划。处理账号定位、人设定位、赛道选择、受众定义、试运营假设或定位修订时使用。
 ---
 
 # 小红书账号定位
 
-为一个明确的 `account_id` 生成 persona artifact。遵守 [xhs-workflow 数据契约](../xhs-workflow/references/data-contracts.md)，不得写入全局共享 persona 或覆盖其他账号。
+内部为一个明确账号生成版本化定位记录。遵守 [数据契约](../xhs-workflow/references/data-contracts.md)，不得写入全局共享定位或覆盖其他账号。
+
+面向内容负责人的所有提问和交付必须遵守 [人工交互与审阅规范](../xhs-workflow/references/human-interface.md)：使用其当前语言，把内部定位状态翻译成“试运营定位（待验证）”或“已验证定位”，只交付 HTML 审阅页，不展示原始 JSON。
 
 ## 前置条件
 
-1. 要求明确的 `workspace_root`、`account_id`、`run_id`、run manifest 和已获 G1 的 account_strategy 路径。
-2. 校验 manifest 与战略，并确认同账号 G0；persona 必须写入 `strategy_artifact_id`。
-3. 修订定位时要求旧 persona 的明确路径；不得用“最新 persona”猜测。
+1. 内部要求明确的工作区、账号、本轮任务和已确认的账号运营策略路径。
+2. 校验任务与策略属于同一账号，并确认启动授权仍有效。
+3. 修订定位时要求旧版本的明确路径；不得用“最新定位”猜测。
 4. 缺少会实质改变定位的信息时，请内容负责人确认；不得填入示例身份或推测个人经历。
 
 ## 工作流
 
 1. 收集身份依据、目标、赛道、目标人群、差异化证据、明确不做事项、可用内容形式和隐私边界。
-2. 把陈述分成已确认事实、偏好、假设和待验证项。试运营按 [references/trial-positioning.md](references/trial-positioning.md) 使用 `mode=assumed`、可证伪 hypotheses 与 validation_plan。
+2. 把陈述分成已确认事实、偏好、假设和待验证项。试运营按 [references/trial-positioning.md](references/trial-positioning.md) 建立“试运营定位（待验证）”、可证伪假设与验证计划；内部值不得出现在人工提问中。
 3. 如获授权，按 [references/competitor-research.md](references/competitor-research.md) 研究公开竞品；工具不可用时标注缺口，不生成虚假账号或指标。
 4. 按 [references/persona-schema.md](references/persona-schema.md) 形成定位。每个内容支柱说明服务对象、价值和边界，不强制数量。
-5. 写入 `persona` JSON，状态设为 `review_required`；路径使用：
+5. 内部写入账号定位机器文件并标记为待人工确认；路径使用：
    `artifacts/<account_id>/persona/<artifact_id>.json`。
-6. 运行核心 CLI 校验并生成 Markdown 审阅视图。
-7. 展示与上一修订版的差异、证据和未决问题，请内容负责人执行 persona 自身的 G1；该批准不代表画像已经验证。
-8. G1 通过后登记到 run manifest。旧版本保留并标记 `superseded`，不得静默覆盖。
+6. 运行核心辅助器校验并生成中文 HTML 审阅页。
+7. 展示与上一版的差异、证据和未决问题，请内容负责人完成“账号定位确认”；该确认只同意开展试运营，不代表定位已经被数据验证。
+8. 确认通过后登记到本轮任务。旧版本保留并标记为已被新版本替代，不得静默覆盖。
 
 ## 质量规则
 
@@ -32,11 +34,11 @@ description: 在已批准账号战略下创建或修订可审计的小红书 per
 - `credentials`、案例和成就必须有用户输入或可核对来源。
 - 竞品信息只用于观察空位和表达模式，不复制文案、视觉或身份。
 - persona 只提供创作约束，不替代本轮明确输入。
-- 从 assumed 改为 validated 必须由 review 证据支持，并建立新 revision、重新 G1。
+- 从“试运营定位（待验证）”改为“已验证定位”必须由复盘证据支持，并建立新版本、重新进行账号定位确认。
 - 不采集与定位无关的个人敏感信息。
 
 ## 输出
 
-- 权威层：通过 V2 校验的 persona JSON。
-- 审阅层：由同一 JSON 渲染的 Markdown；可选 HTML。
-- 审计层：G1 决定、payload hash、修订关系和 artifact 登记事件。
+- 机器层：通过校验的内部账号定位文件，不直接交付给内容负责人。
+- 人工层：中文可视化 HTML，包含定位结论、待验证假设、证据、风险、版本差异和决定区。
+- 审计层：内部保存确认、校验指纹、版本关系和登记事件；人工查看时统一渲染为 HTML。

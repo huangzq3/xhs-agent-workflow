@@ -10,16 +10,16 @@ DRY_RUN=0
 UPGRADE=0
 
 usage() {
-  echo "Usage:"
+  echo "用法："
   echo "  bash install.sh --target PATH [--upgrade] [--dry-run]"
   echo ""
-  echo "PATH must be an absolute Skills directory selected for the active Agent runtime."
+  echo "PATH 必须是当前 Agent 实际使用的 Skills 绝对目录。"
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --target)
-      [ "$#" -ge 2 ] || { echo "ERROR: --target requires a value" >&2; exit 2; }
+      [ "$#" -ge 2 ] || { echo "错误：--target 后必须提供目录" >&2; exit 2; }
       EXPLICIT_TARGET="$2"
       shift 2
       ;;
@@ -36,7 +36,7 @@ while [ "$#" -gt 0 ]; do
       exit 0
       ;;
     *)
-      echo "ERROR: unknown argument: $1" >&2
+      echo "错误：无法识别参数 $1" >&2
       usage >&2
       exit 2
       ;;
@@ -44,7 +44,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$EXPLICIT_TARGET" ] || {
-  echo "ERROR: --target is required; the installer does not guess an Agent-specific directory" >&2
+  echo "错误：必须提供 --target；安装器不会猜测不同 Agent 的 Skills 目录" >&2
   usage >&2
   exit 2
 }
@@ -52,7 +52,7 @@ done
 case "$EXPLICIT_TARGET" in
   /*) SKILLS_TARGET="$EXPLICIT_TARGET" ;;
   *)
-    echo "ERROR: --target must be an absolute path: $EXPLICIT_TARGET" >&2
+    echo "错误：--target 必须是绝对路径：$EXPLICIT_TARGET" >&2
     exit 2
     ;;
 esac
@@ -60,17 +60,17 @@ esac
 for skill in xhs-workflow xhs-persona xhs-topic-report xhs-writer xhs-publish xhs-content-review xhs-iterate; do
   source_dir="$SKILLS_SOURCE/$skill"
   skill_file="$source_dir/SKILL.md"
-  [ -f "$skill_file" ] || { echo "ERROR: missing $skill_file" >&2; exit 2; }
-  [ "$(head -n 1 "$skill_file")" = "---" ] || { echo "ERROR: invalid frontmatter in $skill_file" >&2; exit 2; }
-  grep -q '^name:' "$skill_file" || { echo "ERROR: missing name in $skill_file" >&2; exit 2; }
-  grep -q '^description:' "$skill_file" || { echo "ERROR: missing description in $skill_file" >&2; exit 2; }
+  [ -f "$skill_file" ] || { echo "错误：缺少 $skill_file" >&2; exit 2; }
+  [ "$(head -n 1 "$skill_file")" = "---" ] || { echo "错误：$skill_file 的头部格式不合法" >&2; exit 2; }
+  grep -q '^name:' "$skill_file" || { echo "错误：$skill_file 缺少名称" >&2; exit 2; }
+  grep -q '^description:' "$skill_file" || { echo "错误：$skill_file 缺少用途说明" >&2; exit 2; }
 done
 
-echo "XHS Workflow Pack $PACKAGE_VERSION"
-echo "Source: $SKILLS_SOURCE"
-echo "Target: $SKILLS_TARGET"
+echo "小红书运营工作流 $PACKAGE_VERSION"
+echo "来源目录：$SKILLS_SOURCE"
+echo "目标目录：$SKILLS_TARGET"
 if [ "$DRY_RUN" -eq 1 ]; then
-  echo "Mode: dry-run"
+  echo "模式：仅预览，不写入文件"
 fi
 
 if [ "$DRY_RUN" -eq 0 ]; then
@@ -87,23 +87,23 @@ for skill in xhs-workflow xhs-persona xhs-topic-report xhs-writer xhs-publish xh
   target_dir="$SKILLS_TARGET/$skill"
 
   if [ -d "$target_dir" ] && [ "$UPGRADE" -eq 0 ]; then
-    echo "SKIP: $skill already exists; use --upgrade to back up and replace"
+    echo "跳过：$skill 已存在；如需备份并替换，请使用 --upgrade"
     SKIPPED=$((SKIPPED + 1))
     continue
   fi
 
   if [ "$DRY_RUN" -eq 1 ]; then
     if [ -d "$target_dir" ]; then
-      echo "PLAN: move $target_dir to $BACKUP_ROOT/$skill"
+      echo "计划：把 $target_dir 移到备份目录 $BACKUP_ROOT/$skill"
     fi
-    echo "PLAN: install $source_dir to $target_dir"
+    echo "计划：把 $source_dir 安装到 $target_dir"
     continue
   fi
 
   if [ -d "$target_dir" ]; then
     mkdir -p "$BACKUP_ROOT"
     mv "$target_dir" "$BACKUP_ROOT/$skill"
-    echo "BACKUP: $target_dir -> $BACKUP_ROOT/$skill"
+    echo "已备份：$target_dir -> $BACKUP_ROOT/$skill"
     BACKED_UP=$((BACKED_UP + 1))
   fi
 
@@ -113,34 +113,34 @@ for skill in xhs-workflow xhs-persona xhs-topic-report xhs-writer xhs-publish xh
     find "$staging_dir/scripts" -type f -name '*.py' -exec chmod u+x {} \;
   fi
   mv "$staging_dir" "$target_dir"
-  [ -f "$target_dir/SKILL.md" ] || { echo "ERROR: install verification failed for $skill" >&2; exit 2; }
-  echo "INSTALLED: $skill"
+  [ -f "$target_dir/SKILL.md" ] || { echo "错误：$skill 安装后校验失败" >&2; exit 2; }
+  echo "已安装：$skill"
   INSTALLED=$((INSTALLED + 1))
 done
 
-echo "Result: installed=$INSTALLED skipped=$SKIPPED backups=$BACKED_UP"
+echo "结果：已安装=${INSTALLED}，已跳过=${SKIPPED}，已备份=${BACKED_UP}"
 if [ "$BACKED_UP" -gt 0 ]; then
-  echo "Recoverable backups: $BACKUP_ROOT"
+  echo "可恢复备份：$BACKUP_ROOT"
 fi
 
 if command -v python3 >/dev/null 2>&1 && python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null; then
   python3 "$SKILLS_SOURCE/xhs-workflow/scripts/workflow_cli.py" --help >/dev/null
   python3 "$SKILLS_SOURCE/xhs-workflow/scripts/portfolio_cli.py" --help >/dev/null
-  echo "OPTIONAL: Python helpers available"
+  echo "可选能力：Python 辅助器可用"
 else
-  echo "OPTIONAL: Python 3.9+ unavailable; use the same JSON contracts through the active Agent's file capabilities"
+  echo "可选能力：Python 3.9+ 不可用；改用当前 Agent 的文件能力维护相同机器契约"
 fi
 
 if command -v python3 >/dev/null 2>&1 && python3 -c 'import PIL' 2>/dev/null; then
-  echo "OPTIONAL: Pillow available for local rendering and image verification"
+  echo "可选能力：Pillow 可用于本地文字卡渲染和图片核对"
 else
-  echo "OPTIONAL: Pillow missing; local text-card rendering and image finalization are unavailable"
+  echo "可选能力：未安装 Pillow，本地文字卡渲染和图片定稿不可用"
 fi
 
 if command -v python3 >/dev/null 2>&1 && python3 -c 'import jsonschema' 2>/dev/null; then
-  echo "OPTIONAL: jsonschema available"
+  echo "可选能力：jsonschema 可用"
 else
-  echo "OPTIONAL: jsonschema missing; use workflow_cli.py cross-field validation when Python is available"
+  echo "可选能力：未安装 jsonschema；Python 可用时仍可使用 workflow_cli.py 完成跨字段校验"
 fi
 
-echo "Next: let the active Agent read xhs-workflow/SKILL.md and discover its runtime capabilities before G0"
+echo "下一步：让当前 Agent 读取 xhs-workflow/SKILL.md，并在“启动与授权确认”前核对实际能力"

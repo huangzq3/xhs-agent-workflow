@@ -141,6 +141,452 @@ ACCOUNT_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,63}$")
 SHA_RE = re.compile(r"^[a-f0-9]{64}$")
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "references" / "schemas" / "artifact.schema.json"
 
+# Internal codes stay stable for machine handoffs. Everything below is the human
+# presentation dictionary and must be used before showing a value to a person.
+ARTIFACT_LABELS = {
+    "run_manifest": "本轮运营任务",
+    "account_strategy": "账号运营策略",
+    "persona": "账号定位",
+    "topic_report": "选题分析",
+    "content": "内容稿件",
+    "inventory_item": "内容库存项",
+    "publication": "发布记录",
+    "metrics_snapshot": "数据快照",
+    "review": "内容复盘",
+    "experiment": "迭代实验",
+}
+STATUS_LABELS = {
+    "draft": "草稿",
+    "review_required": "待人工确认",
+    "approved": "已确认",
+    "rejected": "已退回修改",
+    "superseded": "已被新版本替代",
+    "collecting": "采集中",
+    "idea": "待构思",
+    "review_ready": "待定稿",
+    "ready": "可以发布",
+    "scheduled": "已排期",
+    "held": "已暂停",
+    "publishing": "发布中",
+    "published": "已发布",
+    "failed": "发布失败",
+    "unknown": "发布结果待核对",
+    "archived": "已归档",
+    "pending": "等待处理",
+    "completed": "已完成",
+    "active": "使用中",
+}
+GATE_LABELS = {
+    "G0": "启动与授权确认",
+    "G1": "账号方案确认",
+    "G2": "选题确认",
+    "G3": "内容定稿确认",
+    "G4": "发布前确认",
+    "G5": "数据采集范围确认",
+    "G6": "迭代实验确认",
+}
+CONTEXTUAL_GATE_LABELS = {
+    ("account_strategy", "G1"): "账号运营策略确认",
+    ("persona", "G1"): "账号定位确认",
+}
+DECISION_LABELS = {
+    "approved": "确认通过",
+    "rejected": "退回修改",
+    "revoked": "撤销此前确认",
+    "allowed": "符合当前规则",
+    "blocked": "当前规则不允许",
+    "needs_human": "需要人工判断",
+    "selected": "已选择",
+    "candidate": "待选择",
+    "prohibited": "禁止",
+    "human_review_required": "必须人工确认",
+}
+VALUE_LABELS = {
+    **STATUS_LABELS,
+    **DECISION_LABELS,
+    "assumed": "试运营定位（待验证）",
+    "validated": "已验证定位",
+    "trial": "试运营期",
+    "scale": "增长期",
+    "stabilize": "稳定期",
+    "flywheel": "复利运营期",
+    "low": "较低",
+    "medium": "中等",
+    "high": "较高",
+    "full": "完整执行",
+    "assisted": "人机协作执行",
+    "document_only": "仅生成方案",
+    "undetermined": "尚未确定",
+    "available": "可使用",
+    "unavailable": "不可使用",
+    "runtime_advertised": "由当前运行环境提供",
+    "human_declared": "由内容负责人说明",
+    "mixed": "综合确认",
+    "complete": "已核对完成",
+    "partial": "部分完成",
+    "full_cycle": "完整运营流程",
+    "strategy_review": "账号策略复核",
+    "trial_content": "试运营内容",
+    "content_production": "单篇内容制作",
+    "batch_creation": "批量内容制作",
+    "publication": "发布",
+    "measurement": "数据采集",
+    "long_tail_review": "长尾复盘",
+    "trial_diversification": "试运营差异化验证",
+    "focused": "专题聚焦研究",
+    "trend_window": "趋势窗口研究",
+    "scope": "确认账号与授权范围",
+    "strategy": "制定账号策略",
+    "persona": "确认账号定位",
+    "topics": "研究并选择选题",
+    "content": "制作内容",
+    "inventory": "安排内容库存",
+    "iteration": "制定迭代实验",
+    "acquisition": "吸引新受众",
+    "trust": "建立信任",
+    "tag_strengthening": "强化账号标签",
+    "trend": "趋势驱动",
+    "ip": "个人品牌驱动",
+    "hybrid": "组合运营",
+    "undecided": "尚未决定",
+    "image": "图文",
+    "video": "视频",
+    "text": "纯文字",
+    "public": "公开",
+    "private": "仅自己可见",
+    "local": "仅在本地处理",
+    "external": "会发送到外部服务处理",
+    "initial": "首次数据采集",
+    "long_tail": "长尾数据采集",
+    "topic": "选题方向",
+    "creative": "内容表达",
+    "distribution": "发布与分发",
+    "positioning": "账号定位",
+    "manual": "由内容负责人设定",
+    "account_baseline": "依据账号历史基线",
+    "experience_seed": "依据已有经验样本",
+    "unset": "尚未设置依据",
+    "deferred": "暂缓处理",
+    "owned": "自有素材",
+    "licensed": "已获得许可",
+    "permission": "已获得明确授权",
+    "public_domain": "公共领域素材",
+    "uploaded_asset": "内容负责人上传的素材",
+    "fact": "事实陈述",
+    "opinion": "观点",
+    "hypothesis": "待验证假设",
+    "human": "内容负责人",
+    "agent": "运行助手",
+}
+CAPABILITY_LABELS = {
+    "local_json_storage": "本地保存工作数据",
+    "append_audit_log": "追加审计记录",
+    "human_approval": "接收人工确认",
+    "web_research": "网页资料研究",
+    "authenticated_platform_control": "使用已登录的平台页面",
+    "native_image_generation": "使用当前工具的原生生图能力",
+    "metrics_collection": "采集运营数据",
+}
+FIELD_LABELS = {
+    "objective": "本轮目标",
+    "run_type": "任务类型",
+    "current_stage": "当前进度",
+    "runtime_capabilities": "当前工具能力",
+    "runtime_name": "运行工具",
+    "captured_at": "记录时间",
+    "capability_source": "能力确认来源",
+    "discovery_status": "核对进度",
+    "execution_mode": "执行方式",
+    "capabilities": "能力清单",
+    "capability_id": "能力记录",
+    "processing_boundary": "数据处理范围",
+    "supports_reference_images": "是否支持参考图",
+    "returns_local_file": "是否返回本地文件",
+    "notes": "备注",
+    "data_scope": "数据使用范围",
+    "allowed_sources": "允许的数据来源",
+    "external_processing": "允许的外部处理",
+    "personal_data": "涉及的个人信息",
+    "data_categories": "数据类别",
+    "purpose": "用途",
+    "constraints": "限制条件",
+    "measurement_plan": "数据复盘计划",
+    "snapshot_windows": "观察时间窗口",
+    "trust_metrics": "信任指标",
+    "long_tail_checkpoints_days": "长尾复盘时间点（天）",
+    "qualitative_rubric_refs": "人工评价标准",
+    "errors": "阻塞问题",
+    "revision": "版本",
+    "supersedes_artifact_id": "替代的旧版本",
+    "lifecycle_stage": "账号所处阶段",
+    "stage_confidence": "阶段判断把握度",
+    "persona_mode": "定位成熟度",
+    "play_mode": "运营方式",
+    "transition": "阶段变化依据",
+    "from_stage": "原阶段",
+    "rationale": "判断理由",
+    "evidence_refs": "证据记录",
+    "alternative_explanations": "其他可能解释",
+    "stage_evidence": "阶段证据",
+    "signal_id": "证据信号",
+    "observation": "观察到的现象",
+    "confidence": "判断把握度",
+    "content_objectives": "内容目标组合",
+    "target_share": "计划占比",
+    "seed_ref": "参考样本",
+    "publishing_policy": "发布规则",
+    "inventory_policy": "内容库存规则",
+    "measurement_policy": "数据复盘规则",
+    "minimum_observation_hours": "发布后最短观察时间（小时）",
+    "same_topic_cooldown_hours": "同主题间隔（小时）",
+    "breakout_hold_hours": "高表现内容保护期（小时）",
+    "threshold_basis": "规则依据",
+    "exceptions_require_human": "例外是否必须人工确认",
+    "modification_policy": "发布后修改规则",
+    "deletion_policy": "发布后删除规则",
+    "target_coverage_days": "库存覆盖天数",
+    "target_ready_items": "可发布内容目标数量",
+    "experience_seed_refs": "经验样本",
+    "limitations": "已知局限",
+    "mode": "定位状态",
+    "hypotheses": "待验证假设",
+    "hypothesis_id": "假设编号",
+    "statement": "假设内容",
+    "validation_plan": "验证计划",
+    "sample_target": "计划验证样本数",
+    "diversity_dimensions": "需要覆盖的差异维度",
+    "success_signals": "支持该定位的信号",
+    "stop_conditions": "停止或调整条件",
+    "identity": "账号身份与定位",
+    "display_name": "账号名称",
+    "positioning_statement": "定位说明",
+    "credentials": "可核对的背景依据",
+    "niche": "内容方向",
+    "primary": "主要方向",
+    "subtopics": "细分方向",
+    "formats": "内容形式",
+    "audience": "目标受众",
+    "segment_id": "受众分组",
+    "name": "名称",
+    "jobs": "希望完成的任务",
+    "pains": "主要问题",
+    "desired_outcomes": "期望结果",
+    "differentiation": "差异化价值",
+    "value_proposition": "能提供的独特价值",
+    "proof": "支持证据",
+    "non_goals": "明确不做",
+    "content_pillars": "内容支柱",
+    "pillar_id": "内容支柱编号",
+    "boundaries": "边界",
+    "topic_seeds": "可尝试的选题方向",
+    "voice": "表达风格",
+    "traits": "风格特点",
+    "do": "建议采用",
+    "dont": "需要避免",
+    "visual": "视觉方向",
+    "principles": "设计原则",
+    "research_mode": "选题研究方式",
+    "requested_topics": "内容负责人提出的选题",
+    "evidence": "证据",
+    "evidence_id": "证据编号",
+    "source_ref": "来源记录",
+    "quote": "可核对原文",
+    "quote_verified": "原文是否已核对",
+    "metrics": "相关数据",
+    "candidates": "候选选题",
+    "topic_id": "选题编号",
+    "premise": "选题核心",
+    "audience_need": "受众需求",
+    "scores": "综合评分",
+    "content_angles": "可执行角度",
+    "risks": "风险与反证",
+    "decision": "当前决定",
+    "selected_topic_ids": "已选择的选题",
+    "content_objective": "本篇内容目标",
+    "content_sequence_no": "试运营内容序号",
+    "format": "内容形式",
+    "title": "标题",
+    "caption": "正文",
+    "hashtags": "话题标签",
+    "claims": "事实与观点核对",
+    "claim_id": "核对项编号",
+    "text": "内容",
+    "kind": "类型",
+    "source_refs": "来源记录",
+    "verification_status": "核对状态",
+    "personal_experiences": "个人经历",
+    "assets": "素材",
+    "asset_id": "素材编号",
+    "uri": "素材位置",
+    "media_type": "素材类型",
+    "rights_status": "权利核对状态",
+    "rights_basis": "权利依据",
+    "license_or_permission_ref": "授权记录",
+    "contains_personal_data": "是否包含个人信息",
+    "external_processing_approved": "是否同意外部处理",
+    "generation_job_id": "生成任务记录",
+    "generator_capability_id": "使用的生成能力",
+    "change_summary": "本次修改摘要",
+    "safety_notes": "安全提醒",
+    "cards": "图文卡片",
+    "shots": "视频分镜",
+    "working_title": "工作标题",
+    "same_topic_key": "同主题识别",
+    "state": "当前状态",
+    "planned_publish_at": "计划发布时间",
+    "hold_reason": "暂停原因",
+    "policy_check": "规则检查",
+    "checked_at": "检查时间",
+    "action": "操作",
+    "reasons": "判断依据",
+    "measurement_schedule": "后续复盘安排",
+    "checkpoint_days": "发布后第几天复盘",
+    "due_at": "应完成时间",
+    "completed_at": "完成时间",
+    "history": "状态变化记录",
+    "from": "原状态",
+    "to": "新状态",
+    "at": "时间",
+    "actor_id": "操作人",
+    "actor_type": "操作角色",
+    "reason": "原因",
+    "target_account_id": "目标账号",
+    "platform": "发布平台",
+    "visibility": "可见范围",
+    "scheduled_at": "定时发布时间",
+    "asset_order": "素材顺序",
+    "post_publish_actions": "发布后的人工决定",
+    "attempts": "发布尝试记录",
+    "remote_id": "平台内容编号",
+    "remote_url": "平台链接",
+    "published_at": "实际发布时间",
+    "last_error": "最近一次问题",
+    "window": "观察窗口",
+    "measurement_kind": "采集类型",
+    "prior_snapshot_artifact_id": "上一份数据快照",
+    "stock_metrics": "当前累计数据",
+    "flow_metrics": "本观察期新增数据",
+    "derived_metrics": "计算指标",
+    "qualitative_metrics": "人工评价",
+    "missing_fields": "暂缺数据",
+    "source": "数据来源",
+    "metric": "指标",
+    "value": "数值",
+    "rubric_ref": "评价标准",
+    "assessed_by": "评价人",
+    "baseline": "对比基线",
+    "observations": "数据直接支持的观察",
+    "diagnoses": "暂定判断",
+    "recommended_interventions": "建议尝试的行动",
+    "lifecycle_assessment": "账号阶段复核",
+    "current_stage": "当前进度",
+    "proposed_stage": "建议阶段",
+    "requires_human_confirmation": "是否需要人工确认",
+    "persona_validation": "定位验证情况",
+    "hypothesis_results": "假设验证结果",
+    "revision_recommended": "是否建议修订定位",
+    "trust_observations": "信任表现观察",
+    "long_tail_observations": "长尾表现观察",
+    "review_artifact_id": "复盘记录",
+    "hypothesis": "本次实验假设",
+    "intervention_type": "实验方向",
+    "independent_variable": "唯一调整项",
+    "control": "保持不变的部分",
+    "target_metric": "目标指标",
+    "guardrails": "保护指标与边界",
+    "observation_window": "观察时间",
+    "sample_size_plan": "样本计划",
+    "stop_rule": "停止条件",
+    "result": "实验结果",
+    "persona_change_proposal": "账号定位修订建议",
+    "strategy_change_proposal": "账号策略修订建议",
+}
+METRIC_LABELS = {
+    "profile_visit_rate": "主页访问率",
+    "follow_rate": "关注转化率",
+    "click_rate": "点击率",
+    "like_count": "点赞数",
+    "collect_count": "收藏数",
+    "comment_count": "评论数",
+    "share_count": "分享数",
+    "view_count": "浏览量",
+}
+EVENT_LABELS = {
+    "account_initialized": "建立账号工作区",
+    "run_created": "创建本轮运营任务",
+    "account_strategy_created": "创建账号运营策略草案",
+    "inventory_created": "加入内容库存",
+    "inventory_transition": "更新内容库存状态",
+    "publishing_policy_checked": "完成发布规则检查",
+    "post_publish_action_decided": "记录发布后的人工决定",
+    "long_tail_checkpoint_completed": "完成长尾复盘检查点",
+    "publication_transition": "更新发布状态",
+    "artifact_superseded": "用新版本替代旧版本",
+    "artifact_registered": "登记阶段产物",
+    "gate_approved": "人工确认通过",
+    "gate_rejected": "人工退回修改",
+    "gate_revoked": "人工撤销确认",
+}
+REPORT_SECTIONS = {
+    "run_manifest": [
+        ("本轮任务", ("objective", "run_type", "current_stage", "content_sequence_no")),
+        ("运行与授权", ("runtime_capabilities", "data_scope")),
+        ("数据复盘计划", ("measurement_plan",)),
+        ("需要处理的问题", ("errors",)),
+    ],
+    "account_strategy": [
+        ("账号阶段", ("lifecycle_stage", "stage_confidence", "persona_mode", "play_mode", "transition", "stage_evidence")),
+        ("内容目标", ("content_objectives",)),
+        ("运营规则", ("publishing_policy", "inventory_policy", "measurement_policy")),
+        ("依据与局限", ("experience_seed_refs", "limitations")),
+    ],
+    "persona": [
+        ("定位结论", ("mode", "identity", "niche", "audience", "differentiation")),
+        ("内容表达", ("content_pillars", "voice", "visual", "boundaries")),
+        ("试运营验证", ("hypotheses", "validation_plan")),
+    ],
+    "topic_report": [
+        ("选题任务", ("objective", "research_mode", "requested_topics")),
+        ("候选与选择", ("candidates", "selected_topic_ids")),
+        ("证据与局限", ("evidence", "limitations")),
+    ],
+    "content": [
+        ("内容预览", ("title", "caption", "hashtags", "format", "content_objective", "content_sequence_no")),
+        ("画面与素材", ("cards", "shots", "assets")),
+        ("真实性核对", ("claims", "personal_experiences", "safety_notes")),
+        ("修改说明", ("change_summary",)),
+    ],
+    "inventory_item": [
+        ("库存安排", ("working_title", "state", "content_objective", "format", "planned_publish_at", "hold_reason")),
+        ("发布规则检查", ("policy_check",)),
+        ("后续复盘", ("measurement_schedule",)),
+        ("状态记录", ("history",)),
+    ],
+    "publication": [
+        ("发布安排", ("target_account_id", "platform", "state", "visibility", "scheduled_at", "asset_order")),
+        ("发布规则检查", ("policy_check",)),
+        ("执行结果", ("attempts", "remote_url", "published_at", "last_error")),
+        ("发布后的人工决定", ("post_publish_actions",)),
+    ],
+    "metrics_snapshot": [
+        ("采集范围", ("captured_at", "window", "measurement_kind", "checkpoint_days", "source")),
+        ("平台数据", ("stock_metrics", "flow_metrics", "derived_metrics", "trust_metrics")),
+        ("人工评价与缺口", ("qualitative_metrics", "missing_fields")),
+    ],
+    "review": [
+        ("对比基线与观察", ("baseline", "observations", "trust_observations", "long_tail_observations")),
+        ("可能原因", ("hypotheses", "diagnoses")),
+        ("下一步建议", ("recommended_interventions",)),
+        ("账号阶段与定位复核", ("lifecycle_assessment", "persona_validation")),
+        ("局限", ("limitations",)),
+    ],
+    "experiment": [
+        ("实验目标", ("hypothesis", "intervention_type", "independent_variable", "control")),
+        ("判断方式", ("target_metric", "guardrails", "observation_window", "sample_size_plan", "stop_rule")),
+        ("当前结果与修订建议", ("state", "result", "persona_change_proposal", "strategy_change_proposal")),
+    ],
+}
+
 
 class WorkflowError(RuntimeError):
     pass
@@ -1391,69 +1837,481 @@ def command_register(args: argparse.Namespace) -> None:
     print(relative)
 
 
-def markdown_render(artifact: dict[str, Any]) -> str:
-    lines = [
-        f"# {artifact.get('artifact_type')} · {artifact.get('artifact_id')}",
-        "",
-        "> 本文件由 JSON artifact 确定性生成，仅用于人工审阅。JSON 才是机器事实源。",
-        "",
-        "| 字段 | 值 |",
-        "|---|---|",
-    ]
-    for field in ("schema_version", "account_id", "run_id", "status", "created_at", "updated_at"):
-        value = str(artifact.get(field, "")).replace("|", "\\|")
-        lines.append(f"| {field} | {value} |")
-    lines.extend(["", "## Payload", "", "```json", json.dumps(artifact.get("payload"), ensure_ascii=False, indent=2), "```"])
-    lines.extend(["", "## Provenance", ""])
-    if artifact.get("provenance"):
-        for source in artifact["provenance"]:
-            lines.append(f"- `{source.get('source_id')}` · {source.get('kind')} · {source.get('summary')}")
-    else:
-        lines.append("- 无")
-    lines.extend(["", "## Approvals", ""])
-    if artifact.get("approvals"):
-        lines.extend(["| Gate | Decision | Actor | At | Payload hash |", "|---|---|---|---|---|"])
-        for approval in artifact["approvals"]:
-            lines.append(
-                f"| {approval.get('gate')} | {approval.get('decision')} | {approval.get('actor_id')} | "
-                f"{approval.get('at')} | `{approval.get('payload_sha256', '')[:12]}…` |"
+def human_gate_label(gate: str | None, artifact_type: str | None = None) -> str:
+    if not gate:
+        return "无需单独确认"
+    return CONTEXTUAL_GATE_LABELS.get((artifact_type or "", gate), GATE_LABELS.get(gate, "人工确认"))
+
+
+def human_field_label(field: str, parent_field: str | None = None) -> str:
+    if field in CAPABILITY_LABELS:
+        return CAPABILITY_LABELS[field]
+    if field in FIELD_LABELS:
+        return FIELD_LABELS[field]
+    if field in METRIC_LABELS:
+        return METRIC_LABELS[field]
+    if re.search(r"[\u3400-\u9fff]", field):
+        return field
+    if parent_field in {"scores", "stock_metrics", "flow_metrics", "derived_metrics", "trust_metrics", "metrics"}:
+        return "自定义指标"
+    return "补充信息"
+
+
+def human_value(value: Any) -> str:
+    if value is None:
+        return "未填写"
+    if value is True:
+        return "是"
+    if value is False:
+        return "否"
+    if isinstance(value, float):
+        return f"{value:.2f}".rstrip("0").rstrip(".")
+    if isinstance(value, (int, float)):
+        return str(value)
+    text = str(value)
+    if text in CAPABILITY_LABELS:
+        return CAPABILITY_LABELS[text]
+    if text in METRIC_LABELS:
+        return METRIC_LABELS[text]
+    if text in EVENT_LABELS:
+        return EVENT_LABELS[text]
+    if text in GATE_LABELS:
+        return GATE_LABELS[text]
+    if text in VALUE_LABELS:
+        return VALUE_LABELS[text]
+    extra_values = {
+        "xiaohongshu": "小红书",
+        "user_input": "内容负责人提供",
+        "web_source": "公开网页资料",
+        "platform_data": "平台数据",
+        "derived": "根据已有资料计算",
+        "generated": "由运行助手生成",
+        "verified": "已核对",
+        "unverified": "尚未核对",
+        "not_applicable": "无需核对",
+        "supported": "已有证据支持",
+        "refuted": "已有证据反驳",
+        "inconclusive": "证据不足，暂不能判断",
+        "proposed": "待确认",
+        "running": "进行中",
+        "stopped": "已停止",
+        "publish": "发布",
+        "modify": "修改已发布内容",
+        "delete": "删除已发布内容",
+    }
+    if text in extra_values:
+        return extra_values[text]
+    duration = re.fullmatch(r"(\d+(?:\.\d+)?)([hd])", text)
+    if duration:
+        unit = "小时" if duration.group(2) == "h" else "天"
+        return f"{duration.group(1)} {unit}"
+    id_labels = {
+        "account_strategy_": "账号策略记录",
+        "run_manifest_": "任务记录",
+        "persona_": "账号定位记录",
+        "topic_report_": "选题报告记录",
+        "topic_": "选题记录",
+        "content_": "内容记录",
+        "inventory_": "库存记录",
+        "publication_": "发布记录",
+        "metrics_": "数据快照记录",
+        "review_": "复盘记录",
+        "experiment_": "实验记录",
+        "evidence_": "证据记录",
+        "source_": "来源记录",
+        "claim_": "核对项",
+        "asset_": "素材记录",
+    }
+    for prefix, label in id_labels.items():
+        if text.startswith(prefix):
+            suffix = text[-6:] if len(text) > 6 else text
+            return f"{label}（…{suffix}）"
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}T.*", text):
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            return parsed.astimezone().strftime("%Y年%m月%d日 %H:%M")
+        except ValueError:
+            pass
+    return text
+
+
+def render_scalar(value: Any) -> str:
+    rendered = human_value(value)
+    escaped = html.escape(rendered)
+    if isinstance(value, str) and re.fullmatch(r"https?://[^\s]+", value):
+        return f'<a href="{html.escape(value, quote=True)}" rel="noopener noreferrer">{escaped}</a>'
+    if value is None:
+        return f'<span class="muted">{escaped}</span>'
+    return escaped
+
+
+def render_human_value(value: Any, field: str | None = None, depth: int = 0) -> str:
+    if depth > 7:
+        return '<span class="muted">内容层级较深，请查看关联的专项审阅页。</span>'
+    if isinstance(value, dict):
+        if not value:
+            return '<span class="muted">暂无记录</span>'
+        if field == "capabilities":
+            items = []
+            for capability_name, detail in value.items():
+                detail = detail if isinstance(detail, dict) else {"status": detail}
+                status = detail.get("status")
+                status_label = "尚未确认" if status == "unknown" else human_value(status)
+                notes = detail.get("notes") or []
+                note_html = render_human_value(notes, "notes", depth + 1) if notes else '<span class="muted">无补充说明</span>'
+                items.append(
+                    '<article class="mini-card">'
+                    f'<div class="mini-title">{html.escape(human_field_label(capability_name))}</div>'
+                    f'<div class="pill {status_tone(status)}">{html.escape(status_label)}</div>'
+                    f'<div class="mini-body">{note_html}</div>'
+                    '</article>'
+                )
+            return '<div class="mini-grid">' + "".join(items) + "</div>"
+        rows = []
+        for child_field, child_value in value.items():
+            label = human_field_label(str(child_field), field)
+            rows.append(
+                '<div class="detail-row">'
+                f'<div class="detail-label">{html.escape(label)}</div>'
+                f'<div class="detail-value">{render_human_value(child_value, str(child_field), depth + 1)}</div>'
+                '</div>'
             )
+        return '<div class="detail-list">' + "".join(rows) + "</div>"
+    if isinstance(value, list):
+        if not value:
+            return '<span class="muted">暂无记录</span>'
+        if all(not isinstance(item, (dict, list)) for item in value):
+            return '<div class="tag-list">' + "".join(
+                f'<span class="tag">{render_scalar(item)}</span>' for item in value
+            ) + "</div>"
+        return '<div class="item-list">' + "".join(
+            '<article class="list-card">'
+            f'<div class="item-number">{index}</div>'
+            f'<div class="item-content">{render_human_value(item, field, depth + 1)}</div>'
+            '</article>'
+            for index, item in enumerate(value, 1)
+        ) + "</div>"
+    return render_scalar(value)
+
+
+def status_tone(value: Any) -> str:
+    if value in {"approved", "ready", "published", "completed", "allowed", "available", "validated", "supported"}:
+        return "positive"
+    if value in {"rejected", "failed", "blocked", "prohibited", "refuted"}:
+        return "negative"
+    if value in {"review_required", "unknown", "held", "needs_human", "pending", "inconclusive"}:
+        return "warning"
+    return "neutral"
+
+
+def review_gate(artifact: dict[str, Any]) -> str | None:
+    artifact_type = artifact.get("artifact_type")
+    if artifact_type == "run_manifest":
+        if not effective_approval(artifact, "G0"):
+            return "G0"
+        if artifact.get("payload", {}).get("current_stage") == "measurement" and not effective_approval(artifact, "G5"):
+            return "G5"
+        return None
+    gates = sorted(GATE_BY_TYPE.get(artifact_type, set()))
+    return gates[0] if gates else None
+
+
+def decision_guidance(artifact_type: str) -> str:
+    return {
+        "run_manifest": "请确认目标账号、可使用的数据来源、登录状态和外部处理范围是否符合预期。",
+        "account_strategy": "请确认账号阶段、内容目标、发布节奏、库存和复盘规则是否符合实际运营意图。",
+        "persona": "请确认账号身份、目标受众、差异化、表达边界，以及试运营验证计划是否可以执行。",
+        "topic_report": "请从候选中明确选择要进入创作的选题，并确认当前证据与局限可以接受。",
+        "content": "请确认标题、正文、图片或视频、事实表述、个人经历和素材权利，修改后需要重新定稿。",
+        "publication": "请核对目标账号、最终内容、素材顺序、可见范围、发布时间和规则例外；确认只授权一次发布尝试。",
+        "experiment": "请确认本轮只调整一个主要因素，并接受观察时间、判断指标和停止条件。",
+    }.get(artifact_type, "请审阅本页信息，并明确选择确认通过、退回修改或暂停处理。")
+
+
+def decision_panel(artifact: dict[str, Any]) -> str:
+    artifact_type = artifact.get("artifact_type", "")
+    gate = review_gate(artifact)
+    if gate and effective_approval(artifact, gate):
+        state = "当前版本已由内容负责人确认"
+        detail = "如内容发生修改，原确认会自动失效，需要重新审阅。"
+        tone = "positive"
+    elif gate:
+        approvals = [item for item in artifact.get("approvals", []) if item.get("gate") == gate]
+        last = approvals[-1].get("decision") if approvals else None
+        state = human_value(last) if last else "等待内容负责人决定"
+        detail = decision_guidance(artifact_type)
+        tone = status_tone(last or "review_required")
     else:
-        lines.append("尚无人工决定。")
-    return "\n".join(lines) + "\n"
+        state = "本页用于查看进度与证据"
+        detail = "如需推进高影响操作，系统会在对应步骤单独请求人工确认。"
+        tone = "neutral"
+    return (
+        f'<section class="decision-panel {tone}">'
+        '<div><div class="eyebrow">当前需要关注</div>'
+        f'<h2>{html.escape(state)}</h2><p>{html.escape(detail)}</p></div>'
+        f'<div class="decision-name">{html.escape(human_gate_label(gate, artifact_type))}</div>'
+        '</section>'
+    )
 
 
-def html_render(artifact: dict[str, Any]) -> str:
-    title = html.escape(f"{artifact.get('artifact_type')} · {artifact.get('artifact_id')}")
-    payload = html.escape(json.dumps(artifact.get("payload"), ensure_ascii=False, indent=2))
-    metadata = "".join(
-        f"<tr><th>{html.escape(field)}</th><td>{html.escape(str(artifact.get(field, '')))}</td></tr>"
-        for field in ("schema_version", "account_id", "run_id", "status", "created_at", "updated_at")
+def payload_sections_html(artifact: dict[str, Any]) -> str:
+    artifact_type = artifact.get("artifact_type", "")
+    payload = artifact.get("payload", {})
+    sections = []
+    for title, fields in REPORT_SECTIONS.get(artifact_type, [("主要信息", tuple(payload.keys()))]):
+        rows = []
+        for field in fields:
+            if field not in payload:
+                continue
+            rows.append(
+                '<div class="report-field">'
+                f'<h3>{html.escape(human_field_label(field))}</h3>'
+                f'<div>{render_human_value(payload.get(field), field)}</div>'
+                '</div>'
+            )
+        if rows:
+            sections.append(f'<section class="report-section"><h2>{html.escape(title)}</h2>{"".join(rows)}</section>')
+    return "".join(sections) or '<section class="report-section"><h2>主要信息</h2><p class="muted">暂无可展示内容。</p></section>'
+
+
+def provenance_html(artifact: dict[str, Any]) -> str:
+    sources = artifact.get("provenance", [])
+    if not sources:
+        return '<section class="report-section"><h2>信息来源</h2><p class="muted">尚未登记信息来源。</p></section>'
+    cards = []
+    for source in sources:
+        url = source.get("url")
+        link = render_scalar(url) if url else '<span class="muted">无外部链接</span>'
+        cards.append(
+            '<article class="source-card">'
+            f'<div class="pill neutral">{html.escape(human_value(source.get("kind")))}</div>'
+            f'<h3>{html.escape(str(source.get("summary") or "未填写来源说明"))}</h3>'
+            f'<p>{html.escape(human_value(source.get("captured_at")))}</p>'
+            f'<div>{link}</div>'
+            '</article>'
+        )
+    return '<section class="report-section"><h2>信息来源</h2><div class="source-grid">' + "".join(cards) + "</div></section>"
+
+
+def approvals_html(artifact: dict[str, Any]) -> str:
+    approvals = artifact.get("approvals", [])
+    if not approvals:
+        return '<section class="report-section"><h2>人工决定记录</h2><p class="muted">尚无人工决定。</p></section>'
+    items = []
+    for approval in reversed(approvals):
+        gate_label = human_gate_label(approval.get("gate"), artifact.get("artifact_type"))
+        decision = human_value(approval.get("decision"))
+        notes = approval.get("notes") or "无补充说明"
+        items.append(
+            '<article class="timeline-item">'
+            f'<div class="timeline-dot {status_tone(approval.get("decision"))}"></div>'
+            '<div class="timeline-body">'
+            f'<div class="timeline-title">{html.escape(gate_label)} · {html.escape(decision)}</div>'
+            f'<div class="timeline-meta">{html.escape(str(approval.get("actor_id") or "未记录"))} · {html.escape(human_value(approval.get("at")))}</div>'
+            f'<p>{html.escape(str(notes))}</p>'
+            '</div></article>'
+        )
+    return '<section class="report-section"><h2>人工决定记录</h2><div class="timeline">' + "".join(items) + "</div></section>"
+
+
+def page_style() -> str:
+    return """
+:root{color-scheme:light;--ink:#172033;--muted:#6b7280;--line:#e6e8ee;--paper:#fff;--bg:#f3f5f9;--brand:#bf3a55;--brand-soft:#fff0f3;--positive:#17795c;--positive-soft:#eaf8f2;--warning:#9a5b00;--warning-soft:#fff7df;--negative:#b4233d;--negative-soft:#fff0f2}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(145deg,#f9fafc 0%,#f2f4f8 55%,#f8eef1 100%);color:var(--ink);font-family:"PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;line-height:1.65}
+.shell{width:min(1120px,calc(100% - 32px));margin:32px auto 64px}.hero{padding:34px;border:1px solid rgba(255,255,255,.9);border-radius:28px;background:rgba(255,255,255,.9);box-shadow:0 24px 70px rgba(34,42,64,.09)}
+.eyebrow{font-size:13px;font-weight:700;letter-spacing:.08em;color:var(--brand);margin-bottom:6px}.hero h1{font-size:clamp(28px,4vw,44px);line-height:1.15;margin:0 0 10px}.hero p{margin:0;color:var(--muted)}
+.summary-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:26px}.summary-card{padding:16px;border:1px solid var(--line);border-radius:18px;background:#fff}.summary-label{font-size:13px;color:var(--muted)}.summary-value{font-size:17px;font-weight:700;margin-top:5px;overflow-wrap:anywhere}
+.decision-panel{display:flex;justify-content:space-between;gap:24px;align-items:center;margin:20px 0;padding:24px 28px;border-radius:22px;border:1px solid var(--line);background:#fff}.decision-panel h2{margin:2px 0 5px;font-size:23px}.decision-panel p{margin:0;color:var(--muted)}.decision-panel.positive{background:var(--positive-soft);border-color:#bfe9da}.decision-panel.warning{background:var(--warning-soft);border-color:#f1d795}.decision-name{min-width:190px;text-align:center;padding:11px 16px;border-radius:999px;background:rgba(255,255,255,.82);font-weight:700}
+.report-section{margin-top:18px;padding:26px 28px;border-radius:22px;border:1px solid var(--line);background:var(--paper);box-shadow:0 10px 30px rgba(34,42,64,.045)}.report-section>h2{font-size:21px;margin:0 0 18px}.report-field{padding:18px 0;border-top:1px solid var(--line)}.report-field:first-of-type{padding-top:0;border-top:0}.report-field>h3{font-size:14px;color:var(--muted);margin:0 0 9px}
+.detail-list{display:grid;gap:9px}.detail-row{display:grid;grid-template-columns:minmax(140px,220px) 1fr;gap:16px;padding:10px 12px;border-radius:12px;background:#f8f9fb}.detail-label{color:var(--muted);font-size:14px}.detail-value{overflow-wrap:anywhere;white-space:pre-wrap}.muted{color:var(--muted)}
+.tag-list{display:flex;flex-wrap:wrap;gap:8px}.tag,.pill{display:inline-flex;align-items:center;padding:5px 10px;border-radius:999px;background:#f1f3f6;font-size:13px}.pill{font-weight:700}.pill.positive{color:var(--positive);background:var(--positive-soft)}.pill.warning{color:var(--warning);background:var(--warning-soft)}.pill.negative{color:var(--negative);background:var(--negative-soft)}.pill.neutral{color:#526077;background:#edf1f7}
+.mini-grid,.source-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.mini-card,.source-card,.list-card{border:1px solid var(--line);border-radius:16px;background:#fff;padding:15px}.mini-title{font-weight:700;margin-bottom:8px}.mini-body{margin-top:10px;font-size:14px}.item-list{display:grid;gap:12px}.list-card{display:grid;grid-template-columns:30px 1fr;gap:10px}.item-number{display:grid;place-items:center;width:26px;height:26px;border-radius:50%;background:var(--brand-soft);color:var(--brand);font-weight:700;font-size:13px}.item-content{min-width:0}.source-card h3{font-size:16px;margin:10px 0 5px}.source-card p{color:var(--muted);font-size:13px;margin:0 0 8px}a{color:#a52643;text-underline-offset:3px}
+.timeline{position:relative}.timeline-item{display:grid;grid-template-columns:20px 1fr;gap:12px;padding-bottom:20px}.timeline-item:last-child{padding-bottom:0}.timeline-dot{width:12px;height:12px;margin-top:7px;border-radius:50%;background:#8290a8;box-shadow:0 0 0 5px #edf1f7}.timeline-dot.positive{background:var(--positive);box-shadow:0 0 0 5px var(--positive-soft)}.timeline-dot.warning{background:#d78a13;box-shadow:0 0 0 5px var(--warning-soft)}.timeline-dot.negative{background:var(--negative);box-shadow:0 0 0 5px var(--negative-soft)}.timeline-title{font-weight:700}.timeline-meta{color:var(--muted);font-size:13px}.timeline-body p{margin:5px 0 0}
+details.trace{margin-top:18px;padding:16px 20px;border:1px dashed #cfd5df;border-radius:16px;color:var(--muted);background:rgba(255,255,255,.64)}details.trace summary{cursor:pointer;font-weight:700;color:#526077}.trace-grid{display:grid;grid-template-columns:180px 1fr;gap:7px 14px;margin-top:14px;font-size:13px;overflow-wrap:anywhere}.footer{margin-top:20px;text-align:center;color:var(--muted);font-size:13px}
+@media(max-width:760px){.shell{width:min(100% - 20px,1120px);margin-top:10px}.hero,.report-section{padding:21px}.summary-grid{grid-template-columns:repeat(2,1fr)}.decision-panel{align-items:flex-start;flex-direction:column}.decision-name{min-width:0}.detail-row{grid-template-columns:1fr;gap:4px}.mini-grid,.source-grid{grid-template-columns:1fr}.trace-grid{grid-template-columns:1fr}}
+"""
+
+
+def trace_details(artifact: dict[str, Any]) -> str:
+    fingerprint = payload_hash(artifact)[:16] + "…"
+    values = (
+        ("账号内部标识", artifact.get("account_id")),
+        ("记录编号", artifact.get("artifact_id")),
+        ("本轮任务编号", artifact.get("run_id")),
+        ("数据结构版本", artifact.get("schema_version")),
+        ("内容校验指纹", fingerprint),
+    )
+    rows = "".join(
+        f'<div>{html.escape(label)}</div><div>{html.escape(str(value) if value is not None else "未填写")}</div>'
+        for label, value in values
+    )
+    return f'<details class="trace"><summary>查看追溯信息</summary><div class="trace-grid">{rows}</div></details>'
+
+
+def html_render(artifact: dict[str, Any], account_display_name: str | None = None) -> str:
+    artifact_type = artifact.get("artifact_type", "")
+    title = ARTIFACT_LABELS.get(artifact_type, "运营审阅页")
+    status = artifact.get("status")
+    summary = (
+        ("当前状态", human_value(status)),
+        ("账号", account_display_name or artifact.get("account_id") or "未填写"),
+        ("创建时间", human_value(artifact.get("created_at"))),
+        ("最后更新", human_value(artifact.get("updated_at"))),
+    )
+    summary_html = "".join(
+        '<div class="summary-card">'
+        f'<div class="summary-label">{html.escape(label)}</div>'
+        f'<div class="summary-value">{html.escape(str(value))}</div>'
+        '</div>'
+        for label, value in summary
     )
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title}</title><style>
-body{{font-family:system-ui,-apple-system,sans-serif;max-width:960px;margin:40px auto;padding:0 20px;color:#1f2937;background:#f8fafc}}
-main{{background:white;border:1px solid #e5e7eb;border-radius:16px;padding:28px;box-shadow:0 8px 30px rgba(15,23,42,.06)}}
-table{{border-collapse:collapse;width:100%}}th,td{{text-align:left;border-bottom:1px solid #e5e7eb;padding:10px;vertical-align:top}}th{{width:180px}}
-pre{{white-space:pre-wrap;word-break:break-word;background:#0f172a;color:#e2e8f0;padding:18px;border-radius:12px;overflow:auto}}
-.notice{{padding:12px 16px;background:#eff6ff;border-left:4px solid #2563eb;border-radius:8px}}
-</style></head><body><main><h1>{title}</h1><p class="notice">本页由 JSON artifact 确定性生成，仅用于人工审阅。</p>
-<table>{metadata}</table><h2>Payload</h2><pre>{payload}</pre></main></body></html>"""
+<title>{html.escape(title)}｜人工审阅</title><style>{page_style()}</style></head>
+<body><main class="shell"><header class="hero"><div class="eyebrow">小红书运营工作流 · 人工审阅</div>
+<h1>{html.escape(title)}</h1><p>页面已把内部记录转换为业务语言，供内容负责人判断；页面不展示机器原始数据。</p>
+<div class="summary-grid">{summary_html}</div></header>
+{decision_panel(artifact)}
+{payload_sections_html(artifact)}
+{provenance_html(artifact)}
+{approvals_html(artifact)}
+{trace_details(artifact)}
+<div class="footer">本页由内部事实记录确定性生成。修改业务内容后，请重新生成审阅页。</div>
+</main></body></html>"""
+
+
+def load_audit_events(root: Path) -> list[dict[str, Any]]:
+    path = root / "audit" / "events.ndjson"
+    if not path.exists():
+        return []
+    events: list[dict[str, Any]] = []
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise WorkflowError(f"审计记录第 {line_number} 行无法读取：{exc.msg}") from exc
+        if not isinstance(event, dict):
+            raise WorkflowError(f"审计记录第 {line_number} 行不是有效事件")
+        events.append(event)
+    return events
+
+
+def human_audit_reason(reason: Any) -> str:
+    text = human_value(reason)
+    if ":" in text:
+        left, right = text.split(":", 1)
+        left_translated = human_value(left.strip())
+        right_translated = human_value(right.strip())
+        return f"{left_translated}：{right_translated}"
+    if text.startswith("day "):
+        return "完成发布后第 " + text[4:] + " 天的复盘"
+    return text
+
+
+def audit_report_html(
+    events: list[dict[str, Any]],
+    title: str,
+    account_id: str | None,
+    run_id: str | None,
+    account_display_name: str | None = None,
+) -> str:
+    human_decisions = sum(1 for event in events if str(event.get("event_type", "")).startswith("gate_"))
+    attention = sum(1 for event in events if event.get("after_status") in {"failed", "unknown", "rejected", "held"})
+    actors = len({event.get("actor_id") for event in events if event.get("actor_id")})
+    scope_parts = []
+    if account_id:
+        scope_parts.append(f"账号 {account_display_name or account_id}")
+    if run_id:
+        scope_parts.append("指定的一轮运营任务")
+    scope = "、".join(scope_parts) if scope_parts else "全部账号与任务"
+    summary = (
+        ("记录范围", scope),
+        ("事件数量", str(len(events))),
+        ("人工决定", str(human_decisions)),
+        ("需要关注", str(attention)),
+    )
+    summary_html = "".join(
+        '<div class="summary-card">'
+        f'<div class="summary-label">{html.escape(label)}</div>'
+        f'<div class="summary-value">{html.escape(value)}</div>'
+        '</div>'
+        for label, value in summary
+    )
+    timeline_items = []
+    for event in reversed(events):
+        event_type = event.get("event_type")
+        before = event.get("before_status")
+        after = event.get("after_status")
+        transition = ""
+        if before is not None or after is not None:
+            transition = f'<div class="tag-list"><span class="tag">{html.escape(human_value(before))}</span><span class="muted">→</span><span class="tag">{html.escape(human_value(after))}</span></div>'
+        actor_role = human_value(event.get("actor_type"))
+        actor_name = event.get("actor_id") or "未记录"
+        timeline_items.append(
+            '<article class="timeline-item">'
+            f'<div class="timeline-dot {status_tone(after)}"></div>'
+            '<div class="timeline-body">'
+            f'<div class="timeline-title">{html.escape(human_value(event_type))}</div>'
+            f'<div class="timeline-meta">{html.escape(human_value(event.get("at")))} · {html.escape(actor_role)}：{html.escape(str(actor_name))}</div>'
+            f'{transition}<p>{html.escape(human_audit_reason(event.get("reason")))}</p>'
+            '</div></article>'
+        )
+    timeline = "".join(timeline_items) or '<p class="muted">当前范围内尚无审计记录。</p>'
+    generated = datetime.now().astimezone().strftime("%Y年%m月%d日 %H:%M")
+    return f"""<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{html.escape(title)}</title><style>{page_style()}</style></head><body><main class="shell">
+<header class="hero"><div class="eyebrow">小红书运营工作流 · 人工审计</div><h1>{html.escape(title)}</h1>
+<p>报告按时间展示发生过的操作、人工决定与异常状态；报告不包含机器原始数据。</p><div class="summary-grid">{summary_html}</div></header>
+<section class="report-section"><h2>操作与决定时间线</h2><div class="timeline">{timeline}</div></section>
+<details class="trace"><summary>查看报告范围</summary><div class="trace-grid"><div>账号范围</div><div>{html.escape(account_id or "全部账号")}</div><div>任务范围</div><div>{html.escape("已指定" if run_id else "全部任务")}</div><div>涉及角色数量</div><div>{actors}</div><div>报告生成时间</div><div>{generated}</div></div></details>
+<div class="footer">审计报告由追加式内部记录生成；如发现缺失或异常，请暂停高影响操作并核对来源。</div>
+</main></body></html>"""
 
 
 def command_render(args: argparse.Namespace) -> None:
     path = Path(args.path).resolve()
     artifact = load_json(path)
+    account_display_name: str | None = None
+    try:
+        root = find_workspace(path)
+        account = load_json(root / "accounts" / artifact.get("account_id", "") / "account.json")
+        account_display_name = account.get("display_name")
+    except WorkflowError:
+        pass
     output = Path(args.output).resolve()
-    rendered = markdown_render(artifact) if args.format == "markdown" else html_render(artifact)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(rendered, encoding="utf-8")
+    output.write_text(html_render(artifact, account_display_name), encoding="utf-8")
+    print(output)
+
+
+def command_audit_report(args: argparse.Namespace) -> None:
+    root = Path(args.root).resolve()
+    load_json(root / "workspace.json")
+    events = load_audit_events(root)
+    if args.account_id:
+        events = [event for event in events if event.get("account_id") == args.account_id]
+    if args.run_id:
+        events = [event for event in events if event.get("run_id") == args.run_id]
+    account_display_name: str | None = None
+    if args.account_id:
+        account_path = root / "accounts" / args.account_id / "account.json"
+        if account_path.exists():
+            account_display_name = load_json(account_path).get("display_name")
+    output = Path(args.output).resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    title = args.title or "小红书运营人工审计报告"
+    output.write_text(
+        audit_report_html(events, title, args.account_id, args.run_id, account_display_name),
+        encoding="utf-8",
+    )
     print(output)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="XHS Workflow V2.2 contract and state CLI")
+    parser = argparse.ArgumentParser(description="小红书运营工作流数据与状态辅助器")
     sub = parser.add_subparsers(dest="command", required=True)
 
     init = sub.add_parser("init", help="初始化工作区或添加账号")
@@ -1510,11 +2368,19 @@ def build_parser() -> argparse.ArgumentParser:
     register.add_argument("--actor-type", choices=["human", "agent"], default="agent")
     register.set_defaults(func=command_register)
 
-    render = sub.add_parser("render", help="从 JSON 生成审阅视图")
+    render = sub.add_parser("render", help="生成中文 HTML 人工审阅页")
     render.add_argument("path")
-    render.add_argument("--format", choices=["markdown", "html"], required=True)
+    render.add_argument("--format", choices=["html"], default="html", help="人工审阅页固定为 HTML")
     render.add_argument("--output", required=True)
     render.set_defaults(func=command_render)
+
+    audit_report = sub.add_parser("audit-report", help="生成中文 HTML 人工审计报告")
+    audit_report.add_argument("--root", required=True)
+    audit_report.add_argument("--output", required=True)
+    audit_report.add_argument("--account-id")
+    audit_report.add_argument("--run-id")
+    audit_report.add_argument("--title")
+    audit_report.set_defaults(func=command_audit_report)
     return parser
 
 
