@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.xhs-workflow.dev/schemas/image-job.schema.json",
+  "title": "Runtime-neutral native image generation handoff",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "job_id",
+    "created_at",
+    "updated_at",
+    "status",
+    "request",
+    "capability_requirement",
+    "execution",
+    "output"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "job_id": {"type": "string", "pattern": "^image_job_[a-z0-9_-]{6,127}$"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "status": {"enum": ["pending", "generated_pending_export", "completed", "failed"]},
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "prompt", "aspect_ratio", "external_processing_approved", "reference_assets", "requested_output_path"],
+      "properties": {
+        "operation": {"enum": ["generate", "edit"]},
+        "prompt": {"type": "string", "minLength": 1},
+        "aspect_ratio": {"type": "string", "pattern": "^[1-9][0-9]*:[1-9][0-9]*$"},
+        "external_processing_approved": {"type": "boolean"},
+        "reference_assets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["uri", "sha256", "external_processing_approved"],
+            "properties": {
+              "uri": {"type": "string", "minLength": 1},
+              "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+              "external_processing_approved": {"type": "boolean"}
+            }
+          }
+        },
+        "requested_output_path": {"type": "string", "minLength": 1}
+      }
+    },
+    "capability_requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "processing_boundary", "supports_reference_images", "must_return_local_file"],
+      "properties": {
+        "kind": {"const": "native_image_generation"},
+        "processing_boundary": {"enum": ["local", "external"]},
+        "supports_reference_images": {"type": "boolean"},
+        "must_return_local_file": {"const": true}
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtime_name", "capability_id", "started_at", "completed_at", "result_reference", "error"],
+      "properties": {
+        "runtime_name": {"type": ["string", "null"]},
+        "capability_id": {"type": ["string", "null"]},
+        "started_at": {"type": ["string", "null"], "format": "date-time"},
+        "completed_at": {"type": ["string", "null"], "format": "date-time"},
+        "result_reference": {"type": ["string", "null"]},
+        "error": {"type": ["string", "null"]}
+      }
+    },
+    "output": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["uri", "sha256", "media_type", "width", "height", "aspect_ratio"],
+          "properties": {
+            "uri": {"type": "string", "minLength": 1},
+            "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "media_type": {"type": "string", "pattern": "^image/"},
+            "width": {"type": "integer", "minimum": 1},
+            "height": {"type": "integer", "minimum": 1},
+            "aspect_ratio": {"type": "string", "pattern": "^[1-9][0-9]*:[1-9][0-9]*$"}
+          }
+        }
+      ]
+    }
+  }
+}
