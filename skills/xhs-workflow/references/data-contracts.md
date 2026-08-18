@@ -58,12 +58,14 @@
 | topic_report | xhs-topic-report | writer | 候选选题、证据、评分、局限 |
 | content | xhs-writer | publish、review | 文案、卡片/分镜、事实与权利台账 |
 | inventory_item | xhs-workflow | publish、review | 创作/排期/发布状态、精确引用、长尾检查点 |
-| publication | xhs-publish | review | 目标账号、预览、尝试、远端结果 |
-| metrics_snapshot | xhs-content-review | review | 某一采集时点的原始指标快照 |
+| publication | xhs-publish | review | 目标账号、立即或定时安排、尝试、远端结果、实际上线时间及依据 |
+| metrics_snapshot | xhs-content-review | review | 某一采集时点的原始指标快照、实际上线时间锚点和真实观察时长 |
 | review | xhs-content-review | iterate | 基线、观察、假设、诊断和建议 |
 | experiment | xhs-iterate | topic-report、writer、review | 单变量实验、窗口、指标和停止条件 |
 
 完整约束由 [schemas/artifact.schema.json](schemas/artifact.schema.json) 定义，并由 `workflow_cli.py validate` 执行额外的跨字段检查。
+
+定时发布记录可以保存 `scheduled_at`、`schedule_expires_at`、`schedule_method` 与平台或运行工具返回的排期凭据。`published_at` 专指平台确认的实际上线时间；计划时间、排期提交时间和发布尝试开始时间不得写入该字段。内容库存中的复盘周期使用 `anchor_published_at` 固定该起点，数据快照用 `published_at_anchor` 证明使用了同一时间轴。
 
 ## 输入优先级
 

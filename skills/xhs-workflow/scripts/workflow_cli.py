@@ -79,7 +79,7 @@ PAYLOAD_REQUIRED = {
     "review": {"strategy_artifact_id", "content_artifact_id", "snapshot_artifact_ids", "baseline", "observations", "hypotheses", "diagnoses", "recommended_interventions", "lifecycle_assessment", "persona_validation", "trust_observations", "long_tail_observations", "limitations"},
     "experiment": {"review_artifact_id", "hypothesis", "intervention_type", "independent_variable", "control", "target_metric", "guardrails", "observation_window", "sample_size_plan", "stop_rule", "state", "strategy_change_proposal"},
 }
-CAPABILITY_KEYS = {
+REQUIRED_CAPABILITY_KEYS = {
     "local_json_storage",
     "append_audit_log",
     "human_approval",
@@ -88,6 +88,8 @@ CAPABILITY_KEYS = {
     "native_image_generation",
     "metrics_collection",
 }
+OPTIONAL_CAPABILITY_KEYS = {"scheduled_execution"}
+CAPABILITY_KEYS = REQUIRED_CAPABILITY_KEYS | OPTIONAL_CAPABILITY_KEYS
 CAPABILITY_STATUSES = {"available", "unavailable", "unknown"}
 EXECUTION_MODES = {"undetermined", "full", "assisted", "document_only"}
 RUN_TYPES = {
@@ -103,6 +105,8 @@ RUN_TYPES = {
 LIFECYCLE_STAGES = {"trial", "scale", "stabilize", "flywheel"}
 CONTENT_OBJECTIVES = {"acquisition", "trust", "tag_strengthening"}
 THRESHOLD_BASES = {"account_baseline", "experience_seed", "manual", "unset"}
+SCHEDULE_METHODS = {"platform_native", "agent_wakeup", "manual_handoff"}
+PUBLISHED_AT_SOURCES = {"platform_metadata", "remote_page_verified", "human_confirmed"}
 INVENTORY_STATES = {"idea", "draft", "review_ready", "ready", "scheduled", "held", "published", "archived"}
 INVENTORY_TRANSITIONS = {
     "idea": {"draft", "archived"},
@@ -129,6 +133,9 @@ APPROVAL_VOLATILE_FIELDS = {
     "remote_id",
     "remote_url",
     "published_at",
+    "published_at_source",
+    "schedule_reference",
+    "execution_checks",
     "last_error",
     "post_publish_actions",
     "current_stage",
@@ -139,6 +146,7 @@ APPROVAL_VOLATILE_FIELDS = {
 ID_RE = re.compile(r"^[a-z][a-z0-9_-]{5,127}$")
 ACCOUNT_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,63}$")
 SHA_RE = re.compile(r"^[a-f0-9]{64}$")
+WINDOW_RE = re.compile(r"^(?:发布后)?\s*(\d+(?:\.\d+)?)\s*(h|d|小时|天)$", re.IGNORECASE)
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "references" / "schemas" / "artifact.schema.json"
 
 # Internal codes stay stable for machine handoffs. Everything below is the human
@@ -277,6 +285,16 @@ VALUE_LABELS = {
     "hypothesis": "待验证假设",
     "human": "内容负责人",
     "agent": "运行助手",
+    "platform_native": "使用平台原生定时发布",
+    "agent_wakeup": "由当前运行工具到点唤醒执行",
+    "manual_handoff": "由账号负责人到点手动发布",
+    "platform_metadata": "平台记录的上线时间",
+    "remote_page_verified": "通过已上线页面核对",
+    "human_confirmed": "由账号负责人核对确认",
+    "due": "已到执行时间",
+    "missed": "已错过允许执行时间",
+    "awaiting_verification": "等待核对是否已上线",
+    "awaiting_submission": "等待提交平台排期",
 }
 CAPABILITY_LABELS = {
     "local_json_storage": "本地保存工作数据",
@@ -286,6 +304,7 @@ CAPABILITY_LABELS = {
     "authenticated_platform_control": "使用已登录的平台页面",
     "native_image_generation": "使用当前工具的原生生图能力",
     "metrics_collection": "采集运营数据",
+    "scheduled_execution": "按指定时间唤醒并执行任务",
 }
 FIELD_LABELS = {
     "objective": "本轮目标",
@@ -440,6 +459,8 @@ FIELD_LABELS = {
     "action": "操作",
     "reasons": "判断依据",
     "measurement_schedule": "后续复盘安排",
+    "schedule_id": "复盘周期编号",
+    "anchor_published_at": "复盘起算时间",
     "checkpoint_days": "发布后第几天复盘",
     "due_at": "应完成时间",
     "completed_at": "完成时间",
@@ -454,14 +475,23 @@ FIELD_LABELS = {
     "platform": "发布平台",
     "visibility": "可见范围",
     "scheduled_at": "定时发布时间",
+    "schedule_expires_at": "最晚允许执行时间",
+    "schedule_method": "定时发布方式",
+    "schedule_reference": "定时任务或平台排期凭据",
+    "execution_checks": "到点执行前复核",
     "asset_order": "素材顺序",
     "post_publish_actions": "发布后的人工决定",
     "attempts": "发布尝试记录",
     "remote_id": "平台内容编号",
     "remote_url": "平台链接",
-    "published_at": "实际发布时间",
+    "published_at": "实际上线时间",
+    "published_at_source": "实际上线时间依据",
     "last_error": "最近一次问题",
     "window": "观察窗口",
+    "published_at_anchor": "复盘起算时间",
+    "window_started_at": "观察开始时间",
+    "window_ended_at": "观察结束时间",
+    "elapsed_hours": "上线后已观察小时数",
     "measurement_kind": "采集类型",
     "prior_snapshot_artifact_id": "上一份数据快照",
     "stock_metrics": "当前累计数据",
@@ -475,6 +505,8 @@ FIELD_LABELS = {
     "rubric_ref": "评价标准",
     "assessed_by": "评价人",
     "baseline": "对比基线",
+    "time_context": "复盘时间轴",
+    "windows": "本次使用的观察周期",
     "observations": "数据直接支持的观察",
     "diagnoses": "暂定判断",
     "recommended_interventions": "建议尝试的行动",
@@ -520,7 +552,12 @@ EVENT_LABELS = {
     "publishing_policy_checked": "完成发布规则检查",
     "post_publish_action_decided": "记录发布后的人工决定",
     "long_tail_checkpoint_completed": "完成长尾复盘检查点",
+    "measurement_checkpoint_completed": "完成复盘周期",
+    "measurement_schedule_created": "建立复盘周期",
     "publication_transition": "更新发布状态",
+    "publication_scheduled": "设置定时发布",
+    "publication_schedule_cleared": "取消定时发布",
+    "published_time_confirmed": "核对实际上线时间",
     "artifact_superseded": "用新版本替代旧版本",
     "artifact_registered": "登记阶段产物",
     "gate_approved": "人工确认通过",
@@ -563,17 +600,19 @@ REPORT_SECTIONS = {
         ("状态记录", ("history",)),
     ],
     "publication": [
-        ("发布安排", ("target_account_id", "platform", "state", "visibility", "scheduled_at", "asset_order")),
-        ("发布规则检查", ("policy_check",)),
-        ("执行结果", ("attempts", "remote_url", "published_at", "last_error")),
+        ("发布安排", ("target_account_id", "platform", "state", "visibility", "scheduled_at", "schedule_expires_at", "schedule_method", "asset_order")),
+        ("发布规则检查", ("policy_check", "execution_checks")),
+        ("执行结果", ("attempts", "remote_url", "published_at", "published_at_source", "last_error")),
         ("发布后的人工决定", ("post_publish_actions",)),
     ],
     "metrics_snapshot": [
-        ("采集范围", ("captured_at", "window", "measurement_kind", "checkpoint_days", "source")),
+        ("观察周期", ("published_at_anchor", "window", "window_started_at", "window_ended_at", "elapsed_hours", "captured_at", "measurement_kind", "checkpoint_days")),
+        ("数据来源", ("source",)),
         ("平台数据", ("stock_metrics", "flow_metrics", "derived_metrics", "trust_metrics")),
         ("人工评价与缺口", ("qualitative_metrics", "missing_fields")),
     ],
     "review": [
+        ("复盘时间轴", ("time_context",)),
         ("对比基线与观察", ("baseline", "observations", "trust_observations", "long_tail_observations")),
         ("可能原因", ("hypotheses", "diagnoses")),
         ("下一步建议", ("recommended_interventions",)),
@@ -649,14 +688,39 @@ def payload_hash(artifact: dict[str, Any], gate: str | None = None) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def parse_datetime(value: Any, field: str, errors: list[str]) -> None:
+def datetime_value(value: Any, field: str) -> datetime:
     if not isinstance(value, str):
-        errors.append(f"{field} 必须是 ISO 8601 字符串")
-        return
+        raise WorkflowError(f"{field} 必须是带时区的 ISO 8601 字符串")
     try:
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        errors.append(f"{field} 不是有效的 ISO 8601 时间：{value}")
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise WorkflowError(f"{field} 不是有效的 ISO 8601 时间：{value}") from exc
+    if parsed.utcoffset() is None:
+        raise WorkflowError(f"{field} 必须包含明确时区：{value}")
+    return parsed
+
+
+def parse_datetime(value: Any, field: str, errors: list[str]) -> None:
+    try:
+        datetime_value(value, field)
+    except WorkflowError as exc:
+        errors.append(str(exc))
+
+
+def parse_window_seconds(value: Any, field: str = "观察窗口") -> int:
+    if not isinstance(value, str):
+        raise WorkflowError(f"{field} 必须使用小时或天表示，例如 24h、72h、发布后7天")
+    match = WINDOW_RE.fullmatch(value.strip())
+    if not match:
+        raise WorkflowError(f"{field} 无法换算为上线后的时间周期：{value}")
+    amount = float(match.group(1))
+    if amount <= 0:
+        raise WorkflowError(f"{field} 必须大于 0：{value}")
+    unit = match.group(2).lower()
+    seconds = amount * (86400 if unit in {"d", "天"} else 3600)
+    if not seconds.is_integer():
+        raise WorkflowError(f"{field} 换算后必须是整秒：{value}")
+    return int(seconds)
 
 
 def require_object(value: Any, field: str, errors: list[str]) -> dict[str, Any]:
@@ -883,9 +947,20 @@ def validate_artifact(artifact: dict[str, Any]) -> list[str]:
         if runtime.get("captured_at"):
             parse_datetime(runtime.get("captured_at"), "payload.runtime_capabilities.captured_at", errors)
         capabilities = require_object(runtime.get("capabilities"), "payload.runtime_capabilities.capabilities", errors)
-        if set(capabilities) != CAPABILITY_KEYS:
-            errors.append("payload.runtime_capabilities.capabilities 必须且只能包含规定的 7 项能力")
-        for capability_name in sorted(CAPABILITY_KEYS):
+        capability_names = set(capabilities)
+        missing_capabilities = sorted(REQUIRED_CAPABILITY_KEYS - capability_names)
+        unknown_capabilities = sorted(capability_names - CAPABILITY_KEYS)
+        if missing_capabilities:
+            errors.append(
+                "payload.runtime_capabilities.capabilities 缺少基础能力："
+                + ", ".join(missing_capabilities)
+            )
+        if unknown_capabilities:
+            errors.append(
+                "payload.runtime_capabilities.capabilities 包含未知能力："
+                + ", ".join(unknown_capabilities)
+            )
+        for capability_name in sorted(capability_names & CAPABILITY_KEYS):
             entry = require_object(
                 capabilities.get(capability_name),
                 f"payload.runtime_capabilities.capabilities.{capability_name}",
@@ -1164,6 +1239,7 @@ def validate_artifact(artifact: dict[str, Any]) -> list[str]:
         validate_policy_check(payload.get("policy_check"), "payload.policy_check", errors)
         schedule = require_list(payload.get("measurement_schedule"), "payload.measurement_schedule", errors)
         seen_checkpoints: set[int] = set()
+        seen_schedule_ids: set[str] = set()
         for index, item in enumerate(schedule):
             if not isinstance(item, dict):
                 errors.append(f"measurement_schedule[{index}] 必须是 object")
@@ -1171,13 +1247,31 @@ def validate_artifact(artifact: dict[str, Any]) -> list[str]:
             for field in ("checkpoint_days", "due_at", "status", "snapshot_artifact_id", "completed_at"):
                 if field not in item:
                     errors.append(f"measurement_schedule[{index}] 缺少 {field}")
+            schedule_id = item.get("schedule_id")
+            if schedule_id is not None:
+                if not isinstance(schedule_id, str) or not schedule_id:
+                    errors.append(f"measurement_schedule[{index}].schedule_id 必须是非空字符串")
+                elif schedule_id in seen_schedule_ids:
+                    errors.append(f"measurement_schedule schedule_id 重复：{schedule_id}")
+                else:
+                    seen_schedule_ids.add(schedule_id)
+            measurement_kind = item.get("measurement_kind")
+            if measurement_kind is not None and measurement_kind not in {"initial", "long_tail"}:
+                errors.append(f"measurement_schedule[{index}].measurement_kind 无效")
             checkpoint = item.get("checkpoint_days")
-            if not isinstance(checkpoint, int) or isinstance(checkpoint, bool) or checkpoint <= 0:
+            if measurement_kind == "initial":
+                if checkpoint is not None:
+                    errors.append(f"measurement_schedule[{index}] 首次采集周期的 checkpoint_days 必须为 null")
+            elif not isinstance(checkpoint, int) or isinstance(checkpoint, bool) or checkpoint <= 0:
                 errors.append(f"measurement_schedule[{index}].checkpoint_days 必须是正整数")
             elif checkpoint in seen_checkpoints:
                 errors.append(f"measurement_schedule checkpoint 重复：{checkpoint}")
             else:
                 seen_checkpoints.add(checkpoint)
+            if measurement_kind is not None and (not isinstance(item.get("window"), str) or not item.get("window")):
+                errors.append(f"measurement_schedule[{index}].window 必须是非空字符串")
+            if item.get("anchor_published_at") is not None:
+                parse_datetime(item.get("anchor_published_at"), f"measurement_schedule[{index}].anchor_published_at", errors)
             if item.get("due_at"):
                 parse_datetime(item.get("due_at"), f"measurement_schedule[{index}].due_at", errors)
             if item.get("status") not in {"pending", "completed", "skipped"}:
@@ -1210,7 +1304,31 @@ def validate_artifact(artifact: dict[str, Any]) -> list[str]:
             errors.append("publication 顶层 status 必须与 payload.state 一致")
         if payload.get("target_account_id") != artifact.get("account_id"):
             errors.append("target_account_id 必须与 artifact.account_id 一致")
+        scheduled_at = payload.get("scheduled_at")
+        schedule_expires_at = payload.get("schedule_expires_at")
+        schedule_method = payload.get("schedule_method")
+        if scheduled_at is not None:
+            parse_datetime(scheduled_at, "payload.scheduled_at", errors)
+            if schedule_expires_at is None:
+                errors.append("定时发布必须记录 schedule_expires_at")
+            else:
+                parse_datetime(schedule_expires_at, "payload.schedule_expires_at", errors)
+                try:
+                    if datetime_value(schedule_expires_at, "payload.schedule_expires_at") <= datetime_value(scheduled_at, "payload.scheduled_at"):
+                        errors.append("schedule_expires_at 必须晚于 scheduled_at")
+                except WorkflowError:
+                    pass
+            if schedule_method not in SCHEDULE_METHODS:
+                errors.append("定时发布必须记录有效的 schedule_method")
+        elif schedule_method is not None or schedule_expires_at is not None:
+            errors.append("未设置 scheduled_at 时不得保留定时发布方式或最晚执行时间")
+        schedule_reference = payload.get("schedule_reference")
+        if schedule_reference is not None and (not isinstance(schedule_reference, str) or not schedule_reference.strip()):
+            errors.append("schedule_reference 必须是非空字符串或 null")
         validate_policy_check(payload.get("policy_check"), "payload.policy_check", errors)
+        execution_checks = require_list(payload.get("execution_checks", []), "payload.execution_checks", errors)
+        for index, check in enumerate(execution_checks):
+            validate_policy_check(check, f"payload.execution_checks[{index}]", errors)
         actions = require_list(payload.get("post_publish_actions"), "payload.post_publish_actions", errors)
         for index, action in enumerate(actions):
             if not isinstance(action, dict):
@@ -1227,8 +1345,16 @@ def validate_artifact(artifact: dict[str, Any]) -> list[str]:
                 errors.append(f"post_publish_actions[{index}].decision 无效")
             if action.get("requested_at"):
                 parse_datetime(action.get("requested_at"), f"post_publish_actions[{index}].requested_at", errors)
-        if state == "published" and not (payload.get("remote_id") or payload.get("remote_url")):
-            errors.append("published 状态必须有 remote_id 或 remote_url")
+        if state == "published":
+            if not (payload.get("remote_id") or payload.get("remote_url")):
+                errors.append("published 状态必须有 remote_id 或 remote_url")
+            if not payload.get("published_at"):
+                errors.append("published 状态必须记录实际上线时间 published_at")
+            else:
+                parse_datetime(payload.get("published_at"), "payload.published_at", errors)
+            source = payload.get("published_at_source")
+            if source is not None and source not in PUBLISHED_AT_SOURCES:
+                errors.append("payload.published_at_source 无效")
     elif artifact_type == "metrics_snapshot":
         if payload.get("format") not in {"image", "video", "text"}:
             errors.append("metrics_snapshot.format 无效")
@@ -1242,6 +1368,12 @@ def validate_artifact(artifact: dict[str, Any]) -> list[str]:
         if measurement_kind == "long_tail" and not payload.get("prior_snapshot_artifact_id"):
             errors.append("long_tail metrics_snapshot 必须引用 prior_snapshot_artifact_id")
         parse_datetime(payload.get("captured_at"), "payload.captured_at", errors)
+        for field in ("published_at_anchor", "window_started_at", "window_ended_at"):
+            if payload.get(field) is not None:
+                parse_datetime(payload.get(field), f"payload.{field}", errors)
+        elapsed_hours = payload.get("elapsed_hours")
+        if elapsed_hours is not None and (not is_number(elapsed_hours) or elapsed_hours < 0):
+            errors.append("payload.elapsed_hours 必须是非负数或 null")
         for section in ("stock_metrics", "flow_metrics", "derived_metrics", "trust_metrics"):
             metrics = require_object(payload.get(section), f"payload.{section}", errors)
             for name, value in metrics.items():
@@ -1262,6 +1394,25 @@ def validate_artifact(artifact: dict[str, Any]) -> list[str]:
         snapshots = require_list(payload.get("snapshot_artifact_ids"), "payload.snapshot_artifact_ids", errors)
         if not snapshots:
             errors.append("review 至少引用一个 metrics_snapshot")
+        time_context = payload.get("time_context")
+        if time_context is not None:
+            time_context = require_object(time_context, "payload.time_context", errors)
+            parse_datetime(time_context.get("published_at"), "payload.time_context.published_at", errors)
+            if time_context.get("published_at_source") not in PUBLISHED_AT_SOURCES:
+                errors.append("payload.time_context.published_at_source 无效")
+            for index, window in enumerate(require_list(time_context.get("windows"), "payload.time_context.windows", errors)):
+                if not isinstance(window, dict):
+                    errors.append(f"payload.time_context.windows[{index}] 必须是 object")
+                    continue
+                for field in ("window", "due_at", "captured_at", "elapsed_hours", "snapshot_artifact_id"):
+                    if field not in window:
+                        errors.append(f"payload.time_context.windows[{index}] 缺少 {field}")
+                for field in ("due_at", "captured_at"):
+                    if window.get(field) is not None:
+                        parse_datetime(window.get(field), f"payload.time_context.windows[{index}].{field}", errors)
+                elapsed = window.get("elapsed_hours")
+                if elapsed is not None and (not is_number(elapsed) or elapsed < 0):
+                    errors.append(f"payload.time_context.windows[{index}].elapsed_hours 必须是非负数")
         for index, hypothesis in enumerate(require_list(payload.get("hypotheses"), "payload.hypotheses", errors)):
             if not isinstance(hypothesis, dict):
                 errors.append(f"hypotheses[{index}] 必须是 object")
@@ -1591,6 +1742,28 @@ def command_approve(args: argparse.Namespace) -> None:
             raise WorkflowError("publication.content_artifact_id 与本地 content 不一致")
         if not effective_approval(content, "G3"):
             raise WorkflowError("G4 前需要关联 content 的当前有效 G3")
+        if publication_payload.get("scheduled_at"):
+            if inventory.get("status") != "scheduled":
+                raise WorkflowError("定时发布必须关联已排期的内容库存项")
+            scheduled_at = datetime_value(publication_payload.get("scheduled_at"), "定时发布时间")
+            inventory_planned_at = datetime_value(inventory_payload.get("planned_publish_at"), "内容库存计划发布时间")
+            if inventory_planned_at != scheduled_at:
+                raise WorkflowError("内容库存的计划发布时间必须与发布记录的定时时间一致")
+            expires_at = datetime_value(publication_payload.get("schedule_expires_at"), "最晚允许执行时间")
+            if scheduled_at <= datetime_value(now_iso(), "当前时间"):
+                raise WorkflowError("发布前确认时，定时发布时间必须仍在未来")
+            if expires_at <= scheduled_at:
+                raise WorkflowError("最晚允许执行时间必须晚于定时发布时间")
+            run_path = root / "runs" / artifact.get("run_id", "") / "run.json"
+            run = load_json(run_path)
+            runtime_capabilities = run.get("payload", {}).get("runtime_capabilities", {}).get("capabilities", {})
+            schedule_method = publication_payload.get("schedule_method")
+            if schedule_method == "agent_wakeup" and runtime_capabilities.get("scheduled_execution", {}).get("status") != "available":
+                raise WorkflowError("当前运行工具未确认具备按指定时间唤醒执行能力，不能选择由运行工具到点执行")
+            if schedule_method == "platform_native" and runtime_capabilities.get("authenticated_platform_control", {}).get("status") != "available":
+                raise WorkflowError("当前未确认可操作已登录的平台页面，不能选择平台原生定时发布")
+        elif inventory.get("status") == "scheduled":
+            raise WorkflowError("已排期的内容库存项必须在发布记录中保留对应的定时时间")
     if args.decision == "approved" and args.gate == "G0":
         payload = artifact.get("payload", {})
         data_scope = payload.get("data_scope", {})
@@ -1636,6 +1809,8 @@ def command_approve(args: argparse.Namespace) -> None:
         measurement_plan = run_payload.get("measurement_plan", {})
         if not measurement_plan.get("snapshot_windows"):
             raise WorkflowError("G5 批准前必须明确至少一个 snapshot_window")
+        for index, window in enumerate(measurement_plan.get("snapshot_windows", [])):
+            parse_window_seconds(window, f"第 {index + 1} 个观察窗口")
         if not measurement_plan.get("trust_metrics"):
             raise WorkflowError("G5 批准前必须明确至少一个 trust_metric")
     before = artifact.get("status")
@@ -1698,6 +1873,111 @@ def command_approve(args: argparse.Namespace) -> None:
     print(f"{args.decision}: {args.gate} {path}")
 
 
+def command_set_schedule(args: argparse.Namespace) -> None:
+    path = Path(args.path).resolve()
+    artifact = load_json(path)
+    if artifact.get("artifact_type") != "publication":
+        raise WorkflowError("只有发布记录可以设置定时发布")
+    if artifact.get("status") not in {"draft", "review_required"}:
+        raise WorkflowError("定时安排必须在发布前确认之前设置；已确认时请先撤销发布前确认")
+    scheduled_at = datetime_value(args.scheduled_at, "定时发布时间")
+    expires_at = datetime_value(args.expires_at, "最晚允许执行时间")
+    recorded_at = datetime_value(args.at or now_iso(), "记录时间")
+    if scheduled_at <= recorded_at:
+        raise WorkflowError("定时发布时间必须晚于当前记录时间")
+    if expires_at <= scheduled_at:
+        raise WorkflowError("最晚允许执行时间必须晚于定时发布时间")
+    payload = artifact["payload"]
+    payload.update(
+        {
+            "scheduled_at": scheduled_at.isoformat(timespec="seconds"),
+            "schedule_expires_at": expires_at.isoformat(timespec="seconds"),
+            "schedule_method": args.method,
+            "schedule_reference": None,
+            "execution_checks": [],
+        }
+    )
+    artifact["updated_at"] = recorded_at.isoformat(timespec="seconds")
+    errors = validate_artifact(artifact)
+    if errors:
+        raise WorkflowError("设置定时发布后记录不合法：" + "; ".join(errors))
+    atomic_write_json(path, artifact)
+    root = find_workspace(path)
+    audit_event(
+        root,
+        artifact,
+        args.actor,
+        args.actor_type,
+        "publication_scheduled",
+        f"{payload['scheduled_at']} 至 {payload['schedule_expires_at']}；{args.method}",
+    )
+    print(path)
+
+
+def command_clear_schedule(args: argparse.Namespace) -> None:
+    path = Path(args.path).resolve()
+    artifact = load_json(path)
+    if artifact.get("artifact_type") != "publication":
+        raise WorkflowError("只有发布记录可以取消定时发布")
+    if artifact.get("status") not in {"draft", "review_required"}:
+        raise WorkflowError("取消定时安排前必须撤销尚未消费的发布前确认")
+    payload = artifact["payload"]
+    if payload.get("scheduled_at") is None:
+        raise WorkflowError("当前发布记录没有定时安排")
+    for field in ("scheduled_at", "schedule_expires_at", "schedule_method", "schedule_reference"):
+        payload[field] = None
+    payload["execution_checks"] = []
+    artifact["updated_at"] = now_iso()
+    errors = validate_artifact(artifact)
+    if errors:
+        raise WorkflowError("取消定时发布后记录不合法：" + "; ".join(errors))
+    atomic_write_json(path, artifact)
+    root = find_workspace(path)
+    audit_event(root, artifact, args.actor, args.actor_type, "publication_schedule_cleared", args.reason)
+    print(path)
+
+
+def command_scheduled_due(args: argparse.Namespace) -> None:
+    root = Path(args.root).resolve()
+    load_json(root / "workspace.json")
+    as_of = datetime_value(args.as_of or now_iso(), "查询时间")
+    actionable: list[dict[str, Any]] = []
+    for path in sorted((root / "artifacts").glob("*/publication/*.json")):
+        artifact = load_json(path)
+        errors = validate_artifact(artifact)
+        if errors:
+            continue
+        payload = artifact.get("payload", {})
+        if not payload.get("scheduled_at") or artifact.get("status") not in {"approved", "publishing"}:
+            continue
+        if not effective_approval(artifact, "G4"):
+            continue
+        scheduled_at = datetime_value(payload["scheduled_at"], "定时发布时间")
+        expires_at = datetime_value(payload["schedule_expires_at"], "最晚允许执行时间")
+        method = payload.get("schedule_method")
+        action_status: str | None = None
+        if artifact.get("status") == "approved" and method == "platform_native":
+            action_status = "awaiting_submission" if as_of < expires_at else "missed"
+        elif artifact.get("status") == "approved" and as_of >= scheduled_at:
+            action_status = "due" if as_of <= expires_at else "missed"
+        elif artifact.get("status") == "publishing" and method == "platform_native" and as_of >= scheduled_at:
+            action_status = "awaiting_verification"
+        if action_status:
+            actionable.append(
+                {
+                    "account_id": artifact["account_id"],
+                    "publication_artifact_id": artifact["artifact_id"],
+                    "publication_path": str(path.relative_to(root)),
+                    "scheduled_at": payload["scheduled_at"],
+                    "schedule_expires_at": payload["schedule_expires_at"],
+                    "schedule_method": method,
+                    "action_status": action_status,
+                }
+            )
+    actionable.sort(key=lambda item: (item["scheduled_at"], item["account_id"], item["publication_artifact_id"]))
+    print(json.dumps(actionable, ensure_ascii=False, indent=2))
+
+
 def command_transition(args: argparse.Namespace) -> None:
     path = Path(args.path).resolve()
     artifact = load_json(path)
@@ -1708,8 +1988,32 @@ def command_transition(args: argparse.Namespace) -> None:
     target = args.to
     if target not in PUBLICATION_TRANSITIONS.get(current, set()):
         raise WorkflowError(f"不允许的发布状态变化：{current} -> {target}")
-    if current == "approved" and target == "publishing" and not effective_approval(artifact, "G4"):
-        raise WorkflowError("进入 publishing 前需要当前 payload 对应的有效 G4 批准")
+    transition_at = datetime_value(args.at or now_iso(), "状态更新时间")
+    if current == "approved" and target == "publishing":
+        if not effective_approval(artifact, "G4"):
+            raise WorkflowError("进入 publishing 前需要当前 payload 对应的有效 G4 批准")
+        scheduled_at_raw = payload.get("scheduled_at")
+        if scheduled_at_raw:
+            scheduled_at = datetime_value(scheduled_at_raw, "定时发布时间")
+            expires_at = datetime_value(payload.get("schedule_expires_at"), "最晚允许执行时间")
+            method = payload.get("schedule_method")
+            if transition_at > expires_at:
+                raise WorkflowError("已经错过允许执行时间；不得自动补发，请重新安排并确认")
+            if method == "platform_native":
+                if not args.schedule_reference:
+                    raise WorkflowError("平台原生定时提交成功后必须记录平台排期凭据")
+            else:
+                if transition_at < scheduled_at:
+                    raise WorkflowError("尚未到定时发布时间，不得提前执行")
+                if method == "manual_handoff" and args.actor_type != "human":
+                    raise WorkflowError("人工到点交接只能由账号负责人确认开始执行")
+                checks = payload.get("execution_checks", [])
+                latest = checks[-1] if checks else None
+                if not isinstance(latest, dict) or latest.get("decision") != "allowed":
+                    raise WorkflowError("到点执行前必须重新检查发布规则，且结果为符合当前规则")
+                checked_at = datetime_value(latest.get("checked_at"), "到点执行前检查时间")
+                if checked_at < scheduled_at or checked_at > transition_at:
+                    raise WorkflowError("到点执行前检查必须在定时发布时间之后、实际执行之前完成")
     if current == "unknown" and args.actor_type != "human":
         raise WorkflowError("unknown 只能由人工核对远端状态后解决")
     if current == "failed" and args.actor_type != "human":
@@ -1718,14 +2022,16 @@ def command_transition(args: argparse.Namespace) -> None:
         raise WorkflowError("published 状态必须提供 remote-id 或 remote-url")
 
     before = artifact["status"]
-    timestamp = now_iso()
+    timestamp = transition_at.isoformat(timespec="seconds")
     if target == "publishing":
+        if args.schedule_reference:
+            payload["schedule_reference"] = args.schedule_reference
         payload.setdefault("attempts", []).append(
             {
                 "attempt_id": new_id("attempt"),
                 "started_at": timestamp,
                 "ended_at": None,
-                "status": "publishing",
+                "status": "scheduled" if payload.get("schedule_method") == "platform_native" else "publishing",
                 "actor_id": args.actor,
                 "error": None,
             }
@@ -1733,9 +2039,15 @@ def command_transition(args: argparse.Namespace) -> None:
     elif current == "publishing" and payload.get("attempts"):
         payload["attempts"][-1].update({"ended_at": timestamp, "status": target, "error": args.error})
     if target == "published":
+        if not args.published_at or not args.published_at_source:
+            raise WorkflowError("确认已发布时必须同时提供实际上线时间及其核对依据")
+        actual_published_at = datetime_value(args.published_at, "实际上线时间")
+        if actual_published_at > transition_at:
+            raise WorkflowError("实际上线时间不能晚于本次核对时间")
         payload["remote_id"] = args.remote_id or payload.get("remote_id")
         payload["remote_url"] = args.remote_url or payload.get("remote_url")
-        payload["published_at"] = timestamp
+        payload["published_at"] = actual_published_at.isoformat(timespec="seconds")
+        payload["published_at_source"] = args.published_at_source
         payload["last_error"] = None
     elif target in {"failed", "unknown"}:
         payload["last_error"] = args.error or "未提供错误详情"
@@ -2023,7 +2335,8 @@ def decision_guidance(artifact_type: str) -> str:
         "persona": "请确认账号身份、目标受众、差异化、表达边界，以及试运营验证计划是否可以执行。",
         "topic_report": "请从候选中明确选择要进入创作的选题，并确认当前证据与局限可以接受。",
         "content": "请确认标题、正文、图片或视频、事实表述、个人经历和素材权利，修改后需要重新定稿。",
-        "publication": "请核对目标账号、最终内容、素材顺序、可见范围、发布时间和规则例外；确认只授权一次发布尝试。",
+        "publication": "请核对目标账号、最终内容、素材顺序、可见范围，以及立即或定时发布安排。定时发布还需确认时区、最晚允许执行时间和执行方式；本次确认只授权一次发布或排期尝试。",
+        "metrics_snapshot": "请核对实际上线时间、观察周期、应采集时间与实际采集时间是否一致，再判断本次数据是否可以进入复盘。",
         "experiment": "请确认本轮只调整一个主要因素，并接受观察时间、判断指标和停止条件。",
     }.get(artifact_type, "请审阅本页信息，并明确选择确认通过、退回修改或暂停处理。")
 
@@ -2117,15 +2430,15 @@ def approvals_html(artifact: dict[str, Any]) -> str:
 def page_style() -> str:
     return """
 :root{color-scheme:light;--ink:#172033;--muted:#6b7280;--line:#e6e8ee;--paper:#fff;--bg:#f3f5f9;--brand:#bf3a55;--brand-soft:#fff0f3;--positive:#17795c;--positive-soft:#eaf8f2;--warning:#9a5b00;--warning-soft:#fff7df;--negative:#b4233d;--negative-soft:#fff0f2}
-*{box-sizing:border-box}body{margin:0;background:linear-gradient(145deg,#f9fafc 0%,#f2f4f8 55%,#f8eef1 100%);color:var(--ink);font-family:"PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;line-height:1.65}
+*{box-sizing:border-box}body{margin:0;overflow-x:hidden;background:linear-gradient(145deg,#f9fafc 0%,#f2f4f8 55%,#f8eef1 100%);color:var(--ink);font-family:"PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;line-height:1.65}
 .shell{width:min(1120px,calc(100% - 32px));margin:32px auto 64px}.hero{padding:34px;border:1px solid rgba(255,255,255,.9);border-radius:28px;background:rgba(255,255,255,.9);box-shadow:0 24px 70px rgba(34,42,64,.09)}
 .eyebrow{font-size:13px;font-weight:700;letter-spacing:.08em;color:var(--brand);margin-bottom:6px}.hero h1{font-size:clamp(28px,4vw,44px);line-height:1.15;margin:0 0 10px}.hero p{margin:0;color:var(--muted)}
-.summary-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:26px}.summary-card{padding:16px;border:1px solid var(--line);border-radius:18px;background:#fff}.summary-label{font-size:13px;color:var(--muted)}.summary-value{font-size:17px;font-weight:700;margin-top:5px;overflow-wrap:anywhere}
+.summary-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:26px}.summary-card{min-width:0;padding:16px;border:1px solid var(--line);border-radius:18px;background:#fff}.summary-label{font-size:13px;color:var(--muted)}.summary-value{min-width:0;font-size:17px;font-weight:700;line-height:1.35;margin-top:5px;overflow-wrap:anywhere;word-break:break-word}
 .decision-panel{display:flex;justify-content:space-between;gap:24px;align-items:center;margin:20px 0;padding:24px 28px;border-radius:22px;border:1px solid var(--line);background:#fff}.decision-panel h2{margin:2px 0 5px;font-size:23px}.decision-panel p{margin:0;color:var(--muted)}.decision-panel.positive{background:var(--positive-soft);border-color:#bfe9da}.decision-panel.warning{background:var(--warning-soft);border-color:#f1d795}.decision-name{min-width:190px;text-align:center;padding:11px 16px;border-radius:999px;background:rgba(255,255,255,.82);font-weight:700}
 .report-section{margin-top:18px;padding:26px 28px;border-radius:22px;border:1px solid var(--line);background:var(--paper);box-shadow:0 10px 30px rgba(34,42,64,.045)}.report-section>h2{font-size:21px;margin:0 0 18px}.report-field{padding:18px 0;border-top:1px solid var(--line)}.report-field:first-of-type{padding-top:0;border-top:0}.report-field>h3{font-size:14px;color:var(--muted);margin:0 0 9px}
-.detail-list{display:grid;gap:9px}.detail-row{display:grid;grid-template-columns:minmax(140px,220px) 1fr;gap:16px;padding:10px 12px;border-radius:12px;background:#f8f9fb}.detail-label{color:var(--muted);font-size:14px}.detail-value{overflow-wrap:anywhere;white-space:pre-wrap}.muted{color:var(--muted)}
+.detail-list{display:grid;gap:9px;min-width:0}.detail-row{display:grid;grid-template-columns:minmax(140px,220px) minmax(0,1fr);gap:16px;min-width:0;padding:10px 12px;border-radius:12px;background:#f8f9fb}.detail-label{color:var(--muted);font-size:14px}.detail-value{min-width:0;overflow-wrap:anywhere;word-break:break-word;white-space:pre-wrap}.muted{color:var(--muted)}
 .tag-list{display:flex;flex-wrap:wrap;gap:8px}.tag,.pill{display:inline-flex;align-items:center;padding:5px 10px;border-radius:999px;background:#f1f3f6;font-size:13px}.pill{font-weight:700}.pill.positive{color:var(--positive);background:var(--positive-soft)}.pill.warning{color:var(--warning);background:var(--warning-soft)}.pill.negative{color:var(--negative);background:var(--negative-soft)}.pill.neutral{color:#526077;background:#edf1f7}
-.mini-grid,.source-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.mini-card,.source-card,.list-card{border:1px solid var(--line);border-radius:16px;background:#fff;padding:15px}.mini-title{font-weight:700;margin-bottom:8px}.mini-body{margin-top:10px;font-size:14px}.item-list{display:grid;gap:12px}.list-card{display:grid;grid-template-columns:30px 1fr;gap:10px}.item-number{display:grid;place-items:center;width:26px;height:26px;border-radius:50%;background:var(--brand-soft);color:var(--brand);font-weight:700;font-size:13px}.item-content{min-width:0}.source-card h3{font-size:16px;margin:10px 0 5px}.source-card p{color:var(--muted);font-size:13px;margin:0 0 8px}a{color:#a52643;text-underline-offset:3px}
+.mini-grid,.source-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;min-width:0}.mini-card,.source-card,.list-card{min-width:0;border:1px solid var(--line);border-radius:16px;background:#fff;padding:15px}.mini-title{font-weight:700;margin-bottom:8px}.mini-body{min-width:0;margin-top:10px;font-size:14px}.item-list{display:grid;gap:12px;min-width:0}.list-card{display:grid;grid-template-columns:30px minmax(0,1fr);gap:10px}.item-number{display:grid;place-items:center;width:26px;height:26px;border-radius:50%;background:var(--brand-soft);color:var(--brand);font-weight:700;font-size:13px}.item-content{min-width:0}.source-card h3{font-size:16px;margin:10px 0 5px}.source-card p{color:var(--muted);font-size:13px;margin:0 0 8px}a{color:#a52643;text-underline-offset:3px}
 .timeline{position:relative}.timeline-item{display:grid;grid-template-columns:20px 1fr;gap:12px;padding-bottom:20px}.timeline-item:last-child{padding-bottom:0}.timeline-dot{width:12px;height:12px;margin-top:7px;border-radius:50%;background:#8290a8;box-shadow:0 0 0 5px #edf1f7}.timeline-dot.positive{background:var(--positive);box-shadow:0 0 0 5px var(--positive-soft)}.timeline-dot.warning{background:#d78a13;box-shadow:0 0 0 5px var(--warning-soft)}.timeline-dot.negative{background:var(--negative);box-shadow:0 0 0 5px var(--negative-soft)}.timeline-title{font-weight:700}.timeline-meta{color:var(--muted);font-size:13px}.timeline-body p{margin:5px 0 0}
 details.trace{margin-top:18px;padding:16px 20px;border:1px dashed #cfd5df;border-radius:16px;color:var(--muted);background:rgba(255,255,255,.64)}details.trace summary{cursor:pointer;font-weight:700;color:#526077}.trace-grid{display:grid;grid-template-columns:180px 1fr;gap:7px 14px;margin-top:14px;font-size:13px;overflow-wrap:anywhere}.footer{margin-top:20px;text-align:center;color:var(--muted);font-size:13px}
 @media(max-width:760px){.shell{width:min(100% - 20px,1120px);margin-top:10px}.hero,.report-section{padding:21px}.summary-grid{grid-template-columns:repeat(2,1fr)}.decision-panel{align-items:flex-start;flex-direction:column}.decision-name{min-width:0}.detail-row{grid-template-columns:1fr;gap:4px}.mini-grid,.source-grid{grid-template-columns:1fr}.trace-grid{grid-template-columns:1fr}}
@@ -2349,6 +2662,28 @@ def build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--notes")
     approve.set_defaults(func=command_approve)
 
+    schedule = sub.add_parser("set-schedule", help="在发布前确认之前设置定时发布")
+    schedule.add_argument("path")
+    schedule.add_argument("--scheduled-at", required=True, help="带时区的定时发布时间")
+    schedule.add_argument("--expires-at", required=True, help="超过该时间不得自动补发")
+    schedule.add_argument("--method", required=True, choices=sorted(SCHEDULE_METHODS))
+    schedule.add_argument("--actor", required=True)
+    schedule.add_argument("--actor-type", choices=["human", "agent"], default="agent")
+    schedule.add_argument("--at", help="测试或回放用记录时间；默认当前时间")
+    schedule.set_defaults(func=command_set_schedule)
+
+    clear_schedule = sub.add_parser("clear-schedule", help="在重新确认前取消定时发布")
+    clear_schedule.add_argument("path")
+    clear_schedule.add_argument("--actor", required=True)
+    clear_schedule.add_argument("--actor-type", choices=["human", "agent"], default="agent")
+    clear_schedule.add_argument("--reason", required=True)
+    clear_schedule.set_defaults(func=command_clear_schedule)
+
+    scheduled_due = sub.add_parser("scheduled-due", help="列出需要提交、到点执行、核对或重新安排的定时发布")
+    scheduled_due.add_argument("--root", required=True)
+    scheduled_due.add_argument("--as-of", help="测试或回放用查询时间；默认当前时间")
+    scheduled_due.set_defaults(func=command_scheduled_due)
+
     transition = sub.add_parser("transition", help="改变 publication 状态")
     transition.add_argument("path")
     transition.add_argument("--to", required=True, choices=sorted(PUBLICATION_TRANSITIONS))
@@ -2357,6 +2692,10 @@ def build_parser() -> argparse.ArgumentParser:
     transition.add_argument("--reason", required=True)
     transition.add_argument("--remote-id")
     transition.add_argument("--remote-url")
+    transition.add_argument("--published-at", help="平台确认的实际上线时间，必须包含时区")
+    transition.add_argument("--published-at-source", choices=sorted(PUBLISHED_AT_SOURCES))
+    transition.add_argument("--schedule-reference", help="平台原生定时任务或排期记录凭据")
+    transition.add_argument("--at", help="测试或回放用状态更新时间；默认当前时间")
     transition.add_argument("--error")
     transition.set_defaults(func=command_transition)
 

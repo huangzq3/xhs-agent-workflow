@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import timedelta
 from pathlib import Path
 
 
@@ -153,10 +154,13 @@ class WorkflowCliTests(unittest.TestCase):
         return {
             "strategy_artifact_id": strategy_id, "inventory_item_artifact_id": inventory_id,
             "content_artifact_id": content_id, "target_account_id": "demo_account", "platform": "xiaohongshu",
-            "state": state, "visibility": "public", "scheduled_at": None, "asset_order": [], "preview_sha256": None,
+            "state": state, "visibility": "public", "scheduled_at": None, "schedule_expires_at": None,
+            "schedule_method": None, "schedule_reference": None, "execution_checks": [],
+            "asset_order": [], "preview_sha256": None,
             "policy_check": {"checked_at": workflow_cli.now_iso(), "strategy_artifact_id": strategy_id, "action": "publish", "decision": decision, "reasons": ["test"]},
             "post_publish_actions": [], "attempts": [], "remote_id": "remote_1" if state == "published" else None,
-            "remote_url": None, "published_at": workflow_cli.now_iso() if state == "published" else None, "last_error": None,
+            "remote_url": None, "published_at": workflow_cli.now_iso() if state == "published" else None,
+            "published_at_source": "platform_metadata" if state == "published" else None, "last_error": None,
         }
 
     def make_ready_inventory(self, strategy_path: Path, persona_path: Path, content_path: Path, artifact_id: str = "inventory_demo01", *, same_topic_key: str | None = None) -> Path:
@@ -176,11 +180,13 @@ class WorkflowCliTests(unittest.TestCase):
         }
         return self.write_artifact("inventory_item", artifact_id, payload, status="ready")
 
-    def snapshot_payload(self, publication_id: str, *, kind: str = "initial", checkpoint: int | None = None, prior: str | None = None) -> dict:
+    def snapshot_payload(self, publication_id: str, *, kind: str = "initial", checkpoint: int | None = None, prior: str | None = None, window: str | None = None, anchor: str | None = None, captured_at: str | None = None) -> dict:
+        captured = captured_at or workflow_cli.now_iso()
         return {
             "content_artifact_id": "content_demo001", "publication_artifact_id": publication_id, "format": "text",
-            "captured_at": workflow_cli.now_iso(), "window": "7d" if kind == "long_tail" else "24h",
+            "captured_at": captured, "window": window or ("7d" if kind == "long_tail" else "24h"),
             "measurement_kind": kind, "checkpoint_days": checkpoint, "prior_snapshot_artifact_id": prior,
+            "published_at_anchor": anchor, "window_started_at": anchor, "window_ended_at": captured, "elapsed_hours": None,
             "stock_metrics": {"views": 10}, "flow_metrics": {"new_views": 10}, "derived_metrics": {"interaction_rate": None},
             "trust_metrics": {"profile_visit_rate": 0.1, "follow_rate": 0.05},
             "qualitative_metrics": [{"metric": "comment_trust", "value": "medium", "rubric_ref": "rubric/trust-v1", "evidence_refs": ["comment_1"], "assessed_by": "human"}],
@@ -192,6 +198,9 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertEqual(schema["properties"]["schema_version"]["const"], "2.2.0")
         self.assertIn("accountStrategyPayload", schema["$defs"])
         self.assertIn("inventoryItemPayload", schema["$defs"])
+        self.assertIn("scheduled_execution", schema["$defs"]["runtimeCapabilities"]["properties"]["capabilities"]["properties"])
+        self.assertIn("schedule_method", schema["$defs"]["publicationPayload"]["properties"])
+        self.assertIn("time_context", schema["$defs"]["reviewPayload"]["properties"])
         installer = INSTALLER.read_text(encoding="utf-8").lower()
         self.assertIn("--target", installer)
         self.assertNotIn(".trae/", installer)
@@ -304,19 +313,71 @@ class WorkflowCliTests(unittest.TestCase):
         run_cli("transition", str(allowed_path), "--to", "unknown", "--actor", "agent", "--reason", "远端超时", "--error", "timeout")
         denied = run_cli("transition", str(allowed_path), "--to", "failed", "--actor", "agent", "--reason", "自动猜测", expected=2)
         self.assertIn("人工", denied.stderr)
-        run_cli("transition", str(allowed_path), "--to", "published", "--actor", "owner", "--actor-type", "human", "--reason", "人工核对远端", "--remote-id", "remote_1")
+        verified_at = workflow_cli.now_iso()
+        run_cli("transition", str(allowed_path), "--to", "published", "--actor", "owner", "--actor-type", "human", "--reason", "人工核对远端", "--remote-id", "remote_1", "--published-at", verified_at, "--published-at-source", "human_confirmed")
 
     def test_g5_requires_trust_metrics_and_snapshot_window(self) -> None:
         self.approve_g0()
         run = json.loads(self.run_path.read_text(encoding="utf-8"))
         denied = run_cli("approve", str(self.run_path), "--gate", "G5", "--actor", "owner", "--decision", "approved", expected=2)
         self.assertIn("snapshot_window", denied.stderr)
-        run["payload"]["measurement_plan"].update({"snapshot_windows": ["24h"], "trust_metrics": ["follow_rate"]})
+        run["payload"]["measurement_plan"].update({"snapshot_windows": ["24h"], "trust_metrics": ["follow_rate"], "long_tail_checkpoints_days": [7, 30]})
         workflow_cli.atomic_write_json(self.run_path, run)
         run_cli("approve", str(self.run_path), "--gate", "G5", "--actor", "owner", "--decision", "approved")
         updated = json.loads(self.run_path.read_text(encoding="utf-8"))
         self.assertTrue(workflow_cli.effective_approval(updated, "G0"))
         self.assertTrue(workflow_cli.effective_approval(updated, "G5"))
+
+    def test_scheduled_publish_waits_for_due_time_and_rechecks_policy(self) -> None:
+        self.configure_runtime()
+        run = json.loads(self.run_path.read_text(encoding="utf-8"))
+        run["payload"]["runtime_capabilities"]["capabilities"]["scheduled_execution"].update(
+            {"status": "available", "capability_id": "test:scheduled_execution"}
+        )
+        workflow_cli.atomic_write_json(self.run_path, run)
+        run_cli("approve", str(self.run_path), "--gate", "G0", "--actor", "owner", "--decision", "approved")
+
+        strategy_path = self.make_strategy(cooldown=None)
+        persona_path = self.make_persona(strategy_path)
+        content_path = self.make_content(strategy_path, persona_path)
+        inventory_path = self.make_ready_inventory(strategy_path, persona_path, content_path)
+        scheduled_at = "2099-01-02T12:00:00+08:00"
+        expires_at = "2099-01-02T12:30:00+08:00"
+        run_portfolio("transition-inventory", str(inventory_path), "--to", "scheduled", "--planned-at", scheduled_at, "--actor", "agent", "--reason", "安排定时发布")
+
+        strategy = json.loads(strategy_path.read_text(encoding="utf-8"))
+        content = json.loads(content_path.read_text(encoding="utf-8"))
+        inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        publication_path = self.write_artifact(
+            "publication",
+            "publication_scheduled01",
+            self.publication_payload(strategy["artifact_id"], inventory["artifact_id"], content["artifact_id"]),
+            status="draft",
+        )
+        run_cli("set-schedule", str(publication_path), "--scheduled-at", scheduled_at, "--expires-at", expires_at, "--method", "agent_wakeup", "--actor", "agent")
+        run_cli("transition", str(publication_path), "--to", "review_required", "--actor", "agent", "--reason", "定时发布预览完成")
+        run_cli("approve", str(publication_path), "--gate", "G4", "--actor", "owner", "--decision", "approved")
+
+        due = run_cli("scheduled-due", "--root", str(self.root), "--as-of", scheduled_at)
+        self.assertEqual(json.loads(due.stdout)[0]["action_status"], "due")
+        early = run_cli("transition", str(publication_path), "--to", "publishing", "--actor", "agent", "--reason", "提前执行", "--at", "2099-01-02T11:59:00+08:00", expected=2)
+        self.assertIn("尚未到", early.stderr)
+        expired = run_cli("transition", str(publication_path), "--to", "publishing", "--actor", "agent", "--reason", "过期补发", "--at", "2099-01-02T12:31:00+08:00", expected=2)
+        self.assertIn("不得自动补发", expired.stderr)
+
+        review_html = self.root / "renders" / "scheduled-publication.html"
+        run_cli("render", str(publication_path), "--output", str(review_html))
+        review_text = review_html.read_text(encoding="utf-8")
+        self.assertIn("由当前运行工具到点唤醒执行", review_text)
+        self.assertIn("最晚允许执行时间", review_text)
+        self.assertNotIn("agent_wakeup", review_text)
+
+        run_portfolio("check-policy", "--strategy", str(strategy_path), "--inventory", str(inventory_path), "--publication", str(publication_path), "--action", "publish", "--execution", "--at", scheduled_at, "--actor", "agent")
+        run_cli("transition", str(publication_path), "--to", "publishing", "--actor", "agent", "--reason", "到点执行", "--at", scheduled_at)
+        run_cli("transition", str(publication_path), "--to", "published", "--actor", "agent", "--reason", "平台确认上线", "--remote-id", "remote_scheduled_1", "--published-at", "2099-01-02T12:01:00+08:00", "--published-at-source", "platform_metadata", "--at", "2099-01-02T12:02:00+08:00")
+        publication = json.loads(publication_path.read_text(encoding="utf-8"))
+        self.assertEqual(publication["payload"]["published_at"], "2099-01-02T12:01:00+08:00")
+        self.assertEqual(publication["payload"]["published_at_source"], "platform_metadata")
 
     def test_same_topic_cooldown_uses_strategy_value(self) -> None:
         self.approve_g0()
@@ -342,6 +403,10 @@ class WorkflowCliTests(unittest.TestCase):
 
     def test_long_tail_schedule_due_and_completion(self) -> None:
         self.approve_g0()
+        run = json.loads(self.run_path.read_text(encoding="utf-8"))
+        run["payload"]["measurement_plan"].update({"snapshot_windows": ["24h"], "trust_metrics": ["follow_rate"], "long_tail_checkpoints_days": [7, 30]})
+        workflow_cli.atomic_write_json(self.run_path, run)
+        run_cli("approve", str(self.run_path), "--gate", "G5", "--actor", "owner", "--decision", "approved")
         strategy_path = self.make_strategy(checkpoints=[7, 30], cooldown=None)
         persona_path = self.make_persona(strategy_path)
         content_path = self.make_content(strategy_path, persona_path)
@@ -355,10 +420,18 @@ class WorkflowCliTests(unittest.TestCase):
         publication_path = self.write_artifact("publication", "publication_longtail01", self.publication_payload(strategy["artifact_id"], inventory["artifact_id"], content["artifact_id"], state="published"), status="published")
         run_portfolio("transition-inventory", str(inventory_path), "--to", "published", "--publication", str(publication_path), "--actor", "agent", "--reason", "发布完成")
         inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
-        self.assertEqual([item["checkpoint_days"] for item in inventory["payload"]["measurement_schedule"]], [7, 30])
+        self.assertEqual([item["window"] for item in inventory["payload"]["measurement_schedule"]], ["24h", "发布后7天", "发布后30天"])
+        actual_online = workflow_cli.datetime_value(json.loads(publication_path.read_text(encoding="utf-8"))["payload"]["published_at"], "实际上线时间")
+        first_due = workflow_cli.datetime_value(inventory["payload"]["measurement_schedule"][0]["due_at"], "首次复盘时间")
+        self.assertEqual(first_due, actual_online + timedelta(hours=24))
+        self.assertNotEqual(first_due, workflow_cli.datetime_value("2026-08-18T12:00:00+08:00", "计划时间加一天"))
         due = run_portfolio("long-tail-due", "--root", str(self.root), "--as-of", "2099-01-01T00:00:00+08:00")
         self.assertEqual(len(json.loads(due.stdout)), 2)
-        snapshot_path = self.write_artifact("metrics_snapshot", "metrics_longtail07", self.snapshot_payload("publication_longtail01", kind="long_tail", checkpoint=7, prior="metrics_initial01"), status="ready")
+        anchor = json.loads(publication_path.read_text(encoding="utf-8"))["payload"]["published_at"]
+        snapshot_path = self.write_artifact("metrics_snapshot", "metrics_longtail07", self.snapshot_payload("publication_longtail01", kind="long_tail", checkpoint=7, prior="metrics_initial01", window="发布后7天", anchor=anchor, captured_at="2098-12-31T00:00:00+08:00"), status="ready")
+        snapshot_html = self.root / "renders" / "long-tail-snapshot.html"
+        run_cli("render", str(snapshot_path), "--output", str(snapshot_html))
+        self.assertIn("复盘起算时间", snapshot_html.read_text(encoding="utf-8"))
         run_portfolio("complete-long-tail", "--inventory", str(inventory_path), "--checkpoint-days", "7", "--snapshot", str(snapshot_path), "--actor", "agent")
         remaining = run_portfolio("long-tail-due", "--root", str(self.root), "--as-of", "2099-01-01T00:00:00+08:00")
         self.assertEqual([item["checkpoint_days"] for item in json.loads(remaining.stdout)], [30])
@@ -372,6 +445,27 @@ class WorkflowCliTests(unittest.TestCase):
         run_portfolio("record-post-publish", "--publication", str(publication_path), "--strategy", str(strategy_path), "--action", "delete", "--decision", "rejected", "--actor", "owner", "--reason", "遵循账号战略")
         publication = json.loads(publication_path.read_text(encoding="utf-8"))
         self.assertEqual(publication["payload"]["post_publish_actions"][0]["actor_type"], "human")
+
+    def test_legacy_publication_can_confirm_actual_time_without_direct_edit(self) -> None:
+        strategy_path = self.make_strategy(cooldown=None)
+        persona_path = self.make_persona(strategy_path)
+        content_path = self.make_content(strategy_path, persona_path)
+        inventory_path = self.make_ready_inventory(strategy_path, persona_path, content_path, "inventory_legacy01")
+        strategy = json.loads(strategy_path.read_text(encoding="utf-8"))
+        content = json.loads(content_path.read_text(encoding="utf-8"))
+        publication_payload = self.publication_payload(strategy["artifact_id"], "inventory_legacy01", content["artifact_id"], state="published")
+        publication_payload.update({"published_at": "2026-08-17T20:03:00+08:00", "published_at_source": None})
+        publication_path = self.write_artifact("publication", "publication_legacy01", publication_payload, status="published")
+        inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        inventory.update({"status": "published", "updated_at": "2026-08-17T20:04:00+08:00"})
+        inventory["payload"].update({"state": "published", "publication_artifact_id": "publication_legacy01", "publication_artifact_path": str(publication_path.relative_to(self.root))})
+        inventory["payload"]["history"].append({"from": "ready", "to": "published", "at": "2026-08-17T20:04:00+08:00", "actor_id": "owner", "actor_type": "human", "reason": "人工确认上线"})
+        workflow_cli.atomic_write_json(inventory_path, inventory)
+
+        run_portfolio("record-actual-publish-time", "--publication", str(publication_path), "--inventory", str(inventory_path), "--published-at", "2026-08-17T20:03:00+08:00", "--source", "human_confirmed", "--evidence", "账号负责人核对创作中心", "--actor", "owner", "--actor-type", "human", "--at", "2026-08-17T20:10:00+08:00")
+        publication = json.loads(publication_path.read_text(encoding="utf-8"))
+        self.assertEqual(publication["payload"]["published_at_source"], "human_confirmed")
+        self.assertTrue(any(item["summary"] == "账号负责人核对创作中心" for item in publication["provenance"]))
 
     def test_all_ten_artifact_contracts_validate(self) -> None:
         strategy_payload = self.strategy_payload()
@@ -387,6 +481,7 @@ class WorkflowCliTests(unittest.TestCase):
         metrics_payload = self.snapshot_payload("publication_demo001")
         review_payload = {
             "strategy_artifact_id": "account_strategy_demo01", "content_artifact_id": "content_demo001", "snapshot_artifact_ids": ["metrics_initial01"], "baseline": {"type": "none"}, "observations": [],
+            "time_context": {"published_at": "2026-08-17T08:00:00+08:00", "published_at_source": "platform_metadata", "windows": [{"window": "24h", "due_at": "2026-08-18T08:00:00+08:00", "captured_at": "2026-08-18T08:05:00+08:00", "elapsed_hours": 24.08, "snapshot_artifact_id": "metrics_initial01"}]},
             "hypotheses": [{"hypothesis_id": "hyp_1", "statement": "样本不足", "evidence_refs": [], "alternative_explanations": [], "confidence": "low"}], "diagnoses": [], "recommended_interventions": [{"type": "creative", "action": "继续采样"}],
             "lifecycle_assessment": {"current_stage": "trial", "proposed_stage": None, "confidence": "low", "evidence_refs": [], "alternative_explanations": [], "requires_human_confirmation": True},
             "persona_validation": {"persona_mode": "assumed", "hypothesis_results": [], "revision_recommended": False, "evidence_refs": []}, "trust_observations": [], "long_tail_observations": [], "limitations": ["样本不足"],
@@ -419,6 +514,9 @@ class WorkflowCliTests(unittest.TestCase):
                     "click_rate",
                 ):
                     self.assertNotIn(f">{internal_value}<", rendered)
+                if fixture["artifact_type"] == "review":
+                    self.assertIn("复盘时间轴", rendered)
+                    self.assertIn("实际上线时间", rendered)
 
     def test_render_escapes_untrusted_html(self) -> None:
         strategy = self.make_strategy()

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic account-strategy, inventory, publishing-policy, and long-tail operations."""
+"""Deterministic account-strategy, inventory, publishing-policy, and measurement operations."""
 
 from __future__ import annotations
 
@@ -14,10 +14,7 @@ import workflow_cli as core
 
 
 def parse_iso(value: str) -> datetime:
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise core.WorkflowError(f"不是有效的 ISO 8601 时间：{value}") from exc
+    return core.datetime_value(value, "时间")
 
 
 def workspace_relative(root: Path, path: Path) -> str:
@@ -214,25 +211,54 @@ def resolve_content(root: Path, inventory: dict[str, Any], explicit_path: str | 
     return content, path
 
 
-def schedule_long_tail(root: Path, inventory: dict[str, Any], publication: dict[str, Any]) -> list[dict[str, Any]]:
+def schedule_measurements(root: Path, inventory: dict[str, Any], publication: dict[str, Any]) -> list[dict[str, Any]]:
     strategy_id = inventory["payload"]["strategy_artifact_id"]
     strategy_path = artifact_path(root, inventory["account_id"], "account_strategy", strategy_id)
     strategy = load_typed(strategy_path, "account_strategy")
-    published_at = publication.get("payload", {}).get("published_at")
+    publication_payload = publication.get("payload", {})
+    published_at = publication_payload.get("published_at")
     if not published_at:
-        raise core.WorkflowError("生成长尾计划前 publication 必须记录 published_at")
+        raise core.WorkflowError("生成复盘计划前必须记录平台确认的实际上线时间")
+    if publication_payload.get("published_at_source") not in core.PUBLISHED_AT_SOURCES:
+        raise core.WorkflowError("生成复盘计划前必须核对实际上线时间的来源")
     baseline = parse_iso(published_at)
-    checkpoints = strategy.get("payload", {}).get("measurement_policy", {}).get("long_tail_checkpoints_days", [])
-    return [
-        {
-            "checkpoint_days": day,
-            "due_at": (baseline + timedelta(days=day)).isoformat(timespec="seconds"),
-            "status": "pending",
-            "snapshot_artifact_id": None,
-            "completed_at": None,
-        }
-        for day in sorted(checkpoints)
-    ]
+    run_path = root / "runs" / inventory["run_id"] / "run.json"
+    run = load_typed(run_path, "run_manifest")
+    if not core.effective_approval(run, "G5"):
+        raise core.WorkflowError("生成复盘计划前需要有效的数据采集范围确认")
+    windows = run.get("payload", {}).get("measurement_plan", {}).get("snapshot_windows", [])
+    checkpoints = run.get("payload", {}).get("measurement_plan", {}).get("long_tail_checkpoints_days", [])
+    schedule: list[dict[str, Any]] = []
+    for index, window in enumerate(windows, start=1):
+        seconds = core.parse_window_seconds(window, f"第 {index} 个观察窗口")
+        schedule.append(
+            {
+                "schedule_id": f"initial_{index}_{seconds}s",
+                "measurement_kind": "initial",
+                "window": window,
+                "checkpoint_days": None,
+                "anchor_published_at": baseline.isoformat(timespec="seconds"),
+                "due_at": (baseline + timedelta(seconds=seconds)).isoformat(timespec="seconds"),
+                "status": "pending",
+                "snapshot_artifact_id": None,
+                "completed_at": None,
+            }
+        )
+    for day in sorted(checkpoints):
+        schedule.append(
+            {
+                "schedule_id": f"long_tail_day_{day}",
+                "measurement_kind": "long_tail",
+                "window": f"发布后{day}天",
+                "checkpoint_days": day,
+                "anchor_published_at": baseline.isoformat(timespec="seconds"),
+                "due_at": (baseline + timedelta(days=day)).isoformat(timespec="seconds"),
+                "status": "pending",
+                "snapshot_artifact_id": None,
+                "completed_at": None,
+            }
+        )
+    return sorted(schedule, key=lambda item: (item["due_at"], item["measurement_kind"], item["schedule_id"]))
 
 
 def command_transition_inventory(args: argparse.Namespace) -> None:
@@ -286,7 +312,8 @@ def command_transition_inventory(args: argparse.Namespace) -> None:
     if publication and publication_path:
         payload["publication_artifact_id"] = publication["artifact_id"]
         payload["publication_artifact_path"] = workspace_relative(root, publication_path)
-        payload["measurement_schedule"] = schedule_long_tail(root, inventory, publication)
+        run = load_typed(root / "runs" / inventory["run_id"] / "run.json", "run_manifest")
+        payload["measurement_schedule"] = schedule_measurements(root, inventory, publication) if core.effective_approval(run, "G5") else []
     payload["state"] = target
     payload.setdefault("history", []).append({"from": current, "to": target, "at": timestamp, "actor_id": args.actor, "actor_type": args.actor_type, "reason": args.reason})
     inventory["status"] = target
@@ -297,6 +324,83 @@ def command_transition_inventory(args: argparse.Namespace) -> None:
     core.atomic_write_json(path, inventory)
     core.audit_event(root, inventory, args.actor, args.actor_type, "inventory_transition", args.reason, before_status, target)
     print(f"{current} -> {target}: {path}")
+
+
+def command_schedule_measurements(args: argparse.Namespace) -> None:
+    inventory_path = Path(args.inventory).resolve()
+    publication_path = Path(args.publication).resolve()
+    inventory = load_typed(inventory_path, "inventory_item")
+    publication = load_typed(publication_path, "publication")
+    require_same_account(inventory, publication)
+    if inventory.get("status") != "published" or publication.get("status") != "published":
+        raise core.WorkflowError("只有已经上线的内容可以建立复盘周期")
+    inventory_payload = inventory["payload"]
+    if inventory_payload.get("publication_artifact_id") != publication.get("artifact_id"):
+        raise core.WorkflowError("publication 与库存项记录的上线内容不一致")
+    if any(item.get("status") == "completed" for item in inventory_payload.get("measurement_schedule", [])):
+        raise core.WorkflowError("已有复盘周期完成后不得重新生成整套周期")
+    root = core.find_workspace(inventory_path)
+    inventory_payload["measurement_schedule"] = schedule_measurements(root, inventory, publication)
+    inventory["updated_at"] = core.now_iso()
+    errors = core.validate_artifact(inventory)
+    if errors:
+        raise core.WorkflowError("生成复盘周期后库存项不合法：" + "; ".join(errors))
+    core.atomic_write_json(inventory_path, inventory)
+    core.audit_event(root, inventory, args.actor, args.actor_type, "measurement_schedule_created", "以实际上线时间生成复盘周期")
+    print(inventory_path)
+
+
+def command_record_actual_publish_time(args: argparse.Namespace) -> None:
+    publication_path = Path(args.publication).resolve()
+    inventory_path = Path(args.inventory).resolve()
+    publication = load_typed(publication_path, "publication")
+    inventory = load_typed(inventory_path, "inventory_item")
+    require_same_account(publication, inventory)
+    if publication.get("status") != "published" or inventory.get("status") != "published":
+        raise core.WorkflowError("只有已经上线的发布记录和内容库存可以核对实际上线时间")
+    if publication.get("payload", {}).get("inventory_item_artifact_id") != inventory.get("artifact_id"):
+        raise core.WorkflowError("publication 与库存项不一致")
+    if inventory.get("payload", {}).get("publication_artifact_id") != publication.get("artifact_id"):
+        raise core.WorkflowError("库存项引用的发布记录不一致")
+    if args.source == "human_confirmed" and args.actor_type != "human":
+        raise core.WorkflowError("由账号负责人核对确认的上线时间必须由人工角色记录")
+    recorded_at = parse_iso(args.at) if args.at else parse_iso(core.now_iso())
+    actual_at = parse_iso(args.published_at)
+    if actual_at > recorded_at:
+        raise core.WorkflowError("实际上线时间不能晚于本次核对时间")
+    old_at = publication.get("payload", {}).get("published_at")
+    changed = old_at is not None and parse_iso(old_at) != actual_at
+    completed = any(item.get("status") == "completed" for item in inventory.get("payload", {}).get("measurement_schedule", []))
+    if changed and completed:
+        raise core.WorkflowError("已有复盘周期完成，不能静默更改起算时间；请保留旧记录并由账号负责人决定修订方式")
+    timestamp = recorded_at.isoformat(timespec="seconds")
+    publication["payload"]["published_at"] = actual_at.isoformat(timespec="seconds")
+    publication["payload"]["published_at_source"] = args.source
+    publication["updated_at"] = timestamp
+    publication.setdefault("provenance", []).append(
+        {
+            "source_id": core.new_id("source"),
+            "kind": "user_input" if args.source == "human_confirmed" else "platform_data",
+            "captured_at": timestamp,
+            "summary": args.evidence,
+        }
+    )
+    root = core.find_workspace(inventory_path)
+    run = load_typed(root / "runs" / inventory["run_id"] / "run.json", "run_manifest")
+    g5_approved = core.effective_approval(run, "G5")
+    if not completed:
+        inventory["payload"]["measurement_schedule"] = schedule_measurements(root, inventory, publication) if g5_approved else []
+    inventory["updated_at"] = timestamp
+    publication_errors = core.validate_artifact(publication)
+    inventory_errors = core.validate_artifact(inventory)
+    if publication_errors or inventory_errors:
+        raise core.WorkflowError("核对实际上线时间后记录不合法：" + "; ".join(publication_errors + inventory_errors))
+    core.atomic_write_json(publication_path, publication)
+    core.atomic_write_json(inventory_path, inventory)
+    core.audit_event(root, publication, args.actor, args.actor_type, "published_time_confirmed", args.evidence)
+    if not completed and g5_approved:
+        core.audit_event(root, inventory, args.actor, args.actor_type, "measurement_schedule_created", "依据核对后的实际上线时间重算待办")
+    print(publication_path)
 
 
 def latest_published_at(root: Path, inventory: dict[str, Any]) -> datetime | None:
@@ -368,6 +472,34 @@ def command_check_policy(args: argparse.Namespace) -> None:
     checked_at = parse_iso(args.at) if args.at else parse_iso(core.now_iso())
     decision, reasons = policy_decision(strategy, inventory, args.action, root, checked_at)
     check = {"checked_at": checked_at.isoformat(timespec="seconds"), "strategy_artifact_id": strategy["artifact_id"], "action": args.action, "decision": decision, "reasons": reasons}
+    if args.execution:
+        if args.action != "publish" or not args.publication:
+            raise core.WorkflowError("到点执行前复核必须同时使用 --action publish 和 --publication")
+        publication_path = Path(args.publication).resolve()
+        publication = load_typed(publication_path, "publication")
+        require_same_account(strategy, inventory, publication)
+        publication_payload = publication.get("payload", {})
+        if publication.get("status") != "approved" or not core.effective_approval(publication, "G4"):
+            raise core.WorkflowError("到点执行前复核只接受具有有效发布前确认的发布记录")
+        if publication_payload.get("inventory_item_artifact_id") != inventory.get("artifact_id"):
+            raise core.WorkflowError("publication 与库存项不一致")
+        scheduled_at = publication_payload.get("scheduled_at")
+        expires_at = publication_payload.get("schedule_expires_at")
+        if not scheduled_at or not expires_at:
+            raise core.WorkflowError("到点执行前复核只用于已经设置时间窗口的定时发布")
+        if checked_at < parse_iso(scheduled_at):
+            raise core.WorkflowError("尚未到定时发布时间，不能提前完成到点复核")
+        if checked_at > parse_iso(expires_at):
+            raise core.WorkflowError("已经错过允许执行时间，必须重新安排并确认")
+        publication_payload.setdefault("execution_checks", []).append(check)
+        publication["updated_at"] = checked_at.isoformat(timespec="seconds")
+        publication_errors = core.validate_artifact(publication)
+        if publication_errors:
+            raise core.WorkflowError("写入到点复核后 publication 不合法：" + "; ".join(publication_errors))
+        core.atomic_write_json(publication_path, publication)
+        core.audit_event(root, publication, args.actor, args.actor_type, "publishing_policy_checked", f"scheduled execution: {decision}")
+        print(json.dumps(check, ensure_ascii=False, indent=2))
+        return
     inventory["payload"]["policy_check"] = check
     inventory["updated_at"] = core.now_iso()
     errors = core.validate_artifact(inventory)
@@ -421,18 +553,97 @@ def command_record_post_publish(args: argparse.Namespace) -> None:
     print(publication_path)
 
 
-def command_long_tail_due(args: argparse.Namespace) -> None:
-    root = Path(args.root).resolve()
-    core.load_json(root / "workspace.json")
-    as_of = parse_iso(args.as_of) if args.as_of else parse_iso(core.now_iso())
+def due_measurements(root: Path, as_of: datetime, kind: str | None = None) -> list[dict[str, Any]]:
     due: list[dict[str, Any]] = []
     for path in sorted((root / "artifacts").glob("*/inventory_item/*.json")):
         inventory = load_typed(path, "inventory_item")
         for item in inventory.get("payload", {}).get("measurement_schedule", []):
+            item_kind = item.get("measurement_kind") or "long_tail"
+            if kind is not None and item_kind != kind:
+                continue
             if item.get("status") == "pending" and parse_iso(item["due_at"]) <= as_of:
-                due.append({"account_id": inventory["account_id"], "inventory_item_artifact_id": inventory["artifact_id"], "inventory_path": workspace_relative(root, path), "checkpoint_days": item["checkpoint_days"], "due_at": item["due_at"]})
+                due.append(
+                    {
+                        "account_id": inventory["account_id"],
+                        "inventory_item_artifact_id": inventory["artifact_id"],
+                        "inventory_path": workspace_relative(root, path),
+                        "schedule_id": item.get("schedule_id"),
+                        "measurement_kind": item_kind,
+                        "window": item.get("window"),
+                        "checkpoint_days": item.get("checkpoint_days"),
+                        "anchor_published_at": item.get("anchor_published_at"),
+                        "due_at": item["due_at"],
+                    }
+                )
     due.sort(key=lambda item: (item["due_at"], item["account_id"], item["inventory_item_artifact_id"]))
-    print(json.dumps(due, ensure_ascii=False, indent=2))
+    return due
+
+
+def command_measurement_due(args: argparse.Namespace) -> None:
+    root = Path(args.root).resolve()
+    core.load_json(root / "workspace.json")
+    as_of = parse_iso(args.as_of) if args.as_of else parse_iso(core.now_iso())
+    print(json.dumps(due_measurements(root, as_of), ensure_ascii=False, indent=2))
+
+
+def command_long_tail_due(args: argparse.Namespace) -> None:
+    root = Path(args.root).resolve()
+    core.load_json(root / "workspace.json")
+    as_of = parse_iso(args.as_of) if args.as_of else parse_iso(core.now_iso())
+    print(json.dumps(due_measurements(root, as_of, "long_tail"), ensure_ascii=False, indent=2))
+
+
+def validate_snapshot_for_schedule(snapshot: dict[str, Any], inventory: dict[str, Any], item: dict[str, Any]) -> None:
+    snapshot_payload = snapshot["payload"]
+    item_kind = item.get("measurement_kind") or "long_tail"
+    if snapshot.get("status") != "ready" or snapshot_payload.get("measurement_kind") != item_kind:
+        raise core.WorkflowError("完成复盘周期必须使用类型一致且状态为 ready 的数据快照")
+    if snapshot_payload.get("publication_artifact_id") != inventory.get("payload", {}).get("publication_artifact_id"):
+        raise core.WorkflowError("snapshot.publication_artifact_id 与库存项不一致")
+    anchor = item.get("anchor_published_at")
+    if anchor and snapshot_payload.get("published_at_anchor") != anchor:
+        raise core.WorkflowError("数据快照的复盘起算时间必须与实际上线时间一致")
+    if item.get("window") and snapshot_payload.get("window") != item.get("window"):
+        raise core.WorkflowError("数据快照的观察窗口与待办周期不一致")
+    if parse_iso(snapshot_payload.get("captured_at")) < parse_iso(item.get("due_at")):
+        raise core.WorkflowError("数据快照采集过早，尚未覆盖完整观察周期")
+
+
+def complete_schedule_item(
+    inventory_path: Path,
+    inventory: dict[str, Any],
+    snapshot: dict[str, Any],
+    item: dict[str, Any],
+    actor: str,
+    actor_type: str,
+) -> None:
+    if item.get("status") != "pending":
+        raise core.WorkflowError("该复盘周期已处理")
+    validate_snapshot_for_schedule(snapshot, inventory, item)
+    timestamp = core.now_iso()
+    item.update({"status": "completed", "snapshot_artifact_id": snapshot["artifact_id"], "completed_at": timestamp})
+    inventory["updated_at"] = timestamp
+    errors = core.validate_artifact(inventory)
+    if errors:
+        raise core.WorkflowError("完成复盘周期后库存项不合法：" + "; ".join(errors))
+    core.atomic_write_json(inventory_path, inventory)
+    root = core.find_workspace(inventory_path)
+    label = item.get("schedule_id") or f"day {item.get('checkpoint_days')}"
+    core.audit_event(root, inventory, actor, actor_type, "measurement_checkpoint_completed", f"{label}: {snapshot['artifact_id']}")
+
+
+def command_complete_measurement(args: argparse.Namespace) -> None:
+    inventory_path = Path(args.inventory).resolve()
+    snapshot_path = Path(args.snapshot).resolve()
+    inventory = load_typed(inventory_path, "inventory_item")
+    snapshot = load_typed(snapshot_path, "metrics_snapshot")
+    require_same_account(inventory, snapshot)
+    for item in inventory["payload"]["measurement_schedule"]:
+        if item.get("schedule_id") == args.schedule_id:
+            complete_schedule_item(inventory_path, inventory, snapshot, item, args.actor, args.actor_type)
+            print(inventory_path)
+            return
+    raise core.WorkflowError("库存项不存在指定的复盘周期")
 
 
 def command_complete_long_tail(args: argparse.Namespace) -> None:
@@ -442,31 +653,14 @@ def command_complete_long_tail(args: argparse.Namespace) -> None:
     snapshot = load_typed(snapshot_path, "metrics_snapshot")
     require_same_account(inventory, snapshot)
     snapshot_payload = snapshot["payload"]
-    if snapshot.get("status") != "ready" or snapshot_payload.get("measurement_kind") != "long_tail":
-        raise core.WorkflowError("长尾完成凭据必须是 ready 的 long_tail metrics_snapshot")
     if snapshot_payload.get("checkpoint_days") != args.checkpoint_days:
         raise core.WorkflowError("snapshot.checkpoint_days 与指定 checkpoint 不一致")
-    if snapshot_payload.get("publication_artifact_id") != inventory.get("payload", {}).get("publication_artifact_id"):
-        raise core.WorkflowError("snapshot.publication_artifact_id 与库存项不一致")
-    matched = False
-    timestamp = core.now_iso()
     for item in inventory["payload"]["measurement_schedule"]:
-        if item.get("checkpoint_days") == args.checkpoint_days:
-            if item.get("status") != "pending":
-                raise core.WorkflowError("该长尾检查点已处理")
-            item.update({"status": "completed", "snapshot_artifact_id": snapshot["artifact_id"], "completed_at": timestamp})
-            matched = True
-            break
-    if not matched:
-        raise core.WorkflowError("库存项不存在指定的长尾检查点")
-    inventory["updated_at"] = timestamp
-    errors = core.validate_artifact(inventory)
-    if errors:
-        raise core.WorkflowError("完成长尾检查后库存项不合法：" + "; ".join(errors))
-    core.atomic_write_json(inventory_path, inventory)
-    root = core.find_workspace(inventory_path)
-    core.audit_event(root, inventory, args.actor, args.actor_type, "long_tail_checkpoint_completed", f"day {args.checkpoint_days}: {snapshot['artifact_id']}")
-    print(inventory_path)
+        if (item.get("measurement_kind") or "long_tail") == "long_tail" and item.get("checkpoint_days") == args.checkpoint_days:
+            complete_schedule_item(inventory_path, inventory, snapshot, item, args.actor, args.actor_type)
+            print(inventory_path)
+            return
+    raise core.WorkflowError("库存项不存在指定的长尾检查点")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -509,12 +703,31 @@ def build_parser() -> argparse.ArgumentParser:
     transition.add_argument("--reason", required=True)
     transition.set_defaults(func=command_transition_inventory)
 
+    schedule_measurement = sub.add_parser("schedule-measurements", help="以上线时间为零点生成短期和长尾复盘周期")
+    schedule_measurement.add_argument("--inventory", required=True)
+    schedule_measurement.add_argument("--publication", required=True)
+    schedule_measurement.add_argument("--actor", required=True)
+    schedule_measurement.add_argument("--actor-type", choices=["human", "agent"], default="agent")
+    schedule_measurement.set_defaults(func=command_schedule_measurements)
+
+    actual_time = sub.add_parser("record-actual-publish-time", help="核对实际上线时间并重算尚未完成的复盘周期")
+    actual_time.add_argument("--publication", required=True)
+    actual_time.add_argument("--inventory", required=True)
+    actual_time.add_argument("--published-at", required=True)
+    actual_time.add_argument("--source", required=True, choices=sorted(core.PUBLISHED_AT_SOURCES))
+    actual_time.add_argument("--evidence", required=True)
+    actual_time.add_argument("--actor", required=True)
+    actual_time.add_argument("--actor-type", choices=["human", "agent"], default="agent")
+    actual_time.add_argument("--at", help="测试或回放用核对时间；默认当前时间")
+    actual_time.set_defaults(func=command_record_actual_publish_time)
+
     check = sub.add_parser("check-policy", help="按账号战略检查发布或发布后动作")
     check.add_argument("--strategy", required=True)
     check.add_argument("--inventory", required=True)
     check.add_argument("--publication")
     check.add_argument("--action", choices=["publish", "modify", "delete"], required=True)
     check.add_argument("--at", help="测试或回放用检查时间；默认当前时间")
+    check.add_argument("--execution", action="store_true", help="记录定时发布到点执行前的复核，不改写发布前确认内容")
     check.add_argument("--actor", required=True)
     check.add_argument("--actor-type", choices=["human", "agent"], default="agent")
     check.set_defaults(func=command_check_policy)
@@ -532,6 +745,19 @@ def build_parser() -> argparse.ArgumentParser:
     due.add_argument("--root", required=True)
     due.add_argument("--as-of")
     due.set_defaults(func=command_long_tail_due)
+
+    measurement_due = sub.add_parser("measurement-due", help="列出以上线时间为起点、已经到期的全部复盘周期")
+    measurement_due.add_argument("--root", required=True)
+    measurement_due.add_argument("--as-of")
+    measurement_due.set_defaults(func=command_measurement_due)
+
+    complete_measurement = sub.add_parser("complete-measurement", help="用匹配时间锚点的数据快照完成复盘周期")
+    complete_measurement.add_argument("--inventory", required=True)
+    complete_measurement.add_argument("--schedule-id", required=True)
+    complete_measurement.add_argument("--snapshot", required=True)
+    complete_measurement.add_argument("--actor", required=True)
+    complete_measurement.add_argument("--actor-type", choices=["human", "agent"], default="agent")
+    complete_measurement.set_defaults(func=command_complete_measurement)
 
     complete = sub.add_parser("complete-long-tail", help="用指标快照完成长尾检查点")
     complete.add_argument("--inventory", required=True)

@@ -10,11 +10,11 @@ account_id、display_name、current_strategy_id、current_lifecycle_stage、curr
 
 ### Content
 
-inventory_item_artifact_id、content_artifact_id、account_id、strategy_artifact_id、content_objective、content_sequence_no、state、planned_publish_at、published_at、remote_url。
+inventory_item_artifact_id、content_artifact_id、account_id、strategy_artifact_id、content_objective、content_sequence_no、state、planned_publish_at、published_at、published_at_source、remote_url。
 
 ### MetricSnapshots
 
-snapshot_artifact_id、content_artifact_id、captured_at、window、measurement_kind、checkpoint_days、stock_metrics_json、flow_metrics_json、derived_metrics_json、trust_metrics_json、qualitative_metrics_json、missing_fields。
+snapshot_artifact_id、content_artifact_id、captured_at、window、measurement_kind、checkpoint_days、published_at_anchor、window_started_at、window_ended_at、elapsed_hours、stock_metrics_json、flow_metrics_json、derived_metrics_json、trust_metrics_json、qualitative_metrics_json、missing_fields。
 
 ### Reviews
 

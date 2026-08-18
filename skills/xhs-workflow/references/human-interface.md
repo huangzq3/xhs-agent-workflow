@@ -40,6 +40,8 @@
 | `needs_human` | 需要人工判断 |
 | `blocked` | 当前规则不允许 |
 | `full` / `assisted` / `document_only` | 完整执行 / 人机协作执行 / 仅生成方案 |
+| `platform_native` / `agent_wakeup` / `manual_handoff` | 使用平台原生定时发布 / 由当前运行工具到点唤醒执行 / 由账号负责人到点手动发布 |
+| `published_at` | 实际上线时间 |
 
 ## 提问模板
 
