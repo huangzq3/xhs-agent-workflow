@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import subprocess
@@ -60,7 +61,7 @@ class WorkflowCliTests(unittest.TestCase):
             entry.update({"status": "unavailable", "capability_id": None, "notes": []})
             if name == "native_image_generation":
                 entry.update({"processing_boundary": "unknown", "supports_reference_images": False, "returns_local_file": False})
-        for name in ("local_json_storage", "append_audit_log", "human_approval"):
+        for name in ("local_json_storage", "append_audit_log", "human_approval", "independent_agent_review"):
             runtime["capabilities"][name].update({"status": "available", "capability_id": f"test:{name}"})
         run["payload"]["data_scope"]["allowed_sources"] = ["user_input"]
         workflow_cli.atomic_write_json(path, run)
@@ -140,13 +141,131 @@ class WorkflowCliTests(unittest.TestCase):
             "title": "如何验证工作流", "caption": "从契约开始。", "hashtags": ["工作流"],
             "claims": [{"claim_id": "claim_1", "text": "建议先验证契约", "kind": "opinion", "source_refs": [], "verification_status": "not_applicable"}],
             "personal_experiences": [], "assets": [], "change_summary": ["初稿"], "safety_notes": [],
+            "authorship": {
+                "actor_type": "agent",
+                "actor_id": "writer_agent_001",
+                "context_id": "writer_context_001",
+                "model_id": "model-a",
+            },
+            "article_audit_ref": None,
         }
+
+    def article_audit_payload(
+        self,
+        content_path: Path,
+        *,
+        verdict: str = "passed",
+        reviewer_id: str = "audit_agent_001",
+        reviewer_context: str = "audit_context_001",
+        reviewer_model: str = "model-b",
+        risk_level: str = "low",
+    ) -> dict:
+        content = json.loads(content_path.read_text(encoding="utf-8"))
+        findings = []
+        if verdict in {"audit_failed", "human_decision_required"}:
+            findings = [{
+                "finding_id": "finding_1",
+                "severity": "P1",
+                "dimension": "logic_and_consistency",
+                "surface_path": "payload.caption",
+                "locator": "正文第 1 句",
+                "excerpt": "从契约开始。",
+                "issue": "结论的适用边界需要内容负责人判断",
+                "claim_refs": [],
+                "evidence_refs": [],
+                "recommendation": "确认是否补充适用边界",
+                "status": "open",
+            }]
+        return {
+            "contract_version": "1.0.0",
+            "content_artifact_id": content["artifact_id"],
+            "content_revision": content["payload"]["revision"],
+            "target_uri": str(content_path.relative_to(self.root)),
+            "content_sha256": workflow_cli.article_audit_contract().auditable_content_hash(content),
+            "hash_mode": "canonical_json",
+            "author": copy.deepcopy(content["payload"]["authorship"]),
+            "reviewer": {
+                "actor_type": "agent",
+                "actor_id": reviewer_id,
+                "context_id": reviewer_context,
+                "model_id": reviewer_model,
+            },
+            "independence": {
+                "separate_agent": True,
+                "separate_context": True,
+                "read_only": True,
+                "prompt_injection_treated_as_data": True,
+                "evidence": ["由编排器创建全新只读审计上下文"],
+            },
+            "ruleset": {
+                "ruleset_id": "article-audit-core",
+                "version": "1.0.0",
+                "core_dimensions": sorted(workflow_cli.article_audit_contract().CORE_DIMENSIONS),
+                "custom_profile_refs": [],
+            },
+            "scope": {
+                "surface_paths": ["payload.title", "payload.caption", "payload.hashtags"],
+                "evidence_refs": [],
+                "limitations": [],
+            },
+            "risk": {
+                "level": risk_level,
+                "reasons": ["测试高风险内容"] if risk_level == "high" else [],
+                "model_diversity_used": risk_level == "high" and reviewer_model != content["payload"]["authorship"]["model_id"],
+            },
+            "claim_inventory": {
+                "method": "independent_full_text_review",
+                "coverage_notes": ["完整阅读标题、正文和话题标签"],
+                "claims": [{
+                    "claim_id": "claim_audit_1",
+                    "text": "建议先验证契约",
+                    "kind": "opinion",
+                    "materiality": "non_material",
+                    "surface_path": "payload.caption",
+                    "source_refs": [],
+                    "verification_status": "not_applicable",
+                }],
+            },
+            "findings": findings,
+            "summary": {
+                "verdict": verdict,
+                "counts": {"P0": 0, "P1": len(findings), "P2": 0},
+                "limitations": ["需要内容负责人取舍"] if verdict == "human_decision_required" else [],
+            },
+        }
+
+    def make_article_audit(
+        self,
+        content_path: Path,
+        artifact_id: str = "article_audit_demo001",
+        **kwargs: object,
+    ) -> Path:
+        return self.write_artifact(
+            "article_audit",
+            artifact_id,
+            self.article_audit_payload(content_path, **kwargs),
+            status="ready",
+        )
+
+    def link_article_audit(self, content_path: Path, audit_path: Path) -> None:
+        run_cli(
+            "link-article-audit",
+            "--content", str(content_path),
+            "--audit", str(audit_path),
+            "--actor", "orchestrator_agent",
+        )
 
     def make_content(self, strategy_path: Path, persona_path: Path, artifact_id: str = "content_demo001", *, approve: bool = True) -> Path:
         strategy = json.loads(strategy_path.read_text(encoding="utf-8"))
         persona = json.loads(persona_path.read_text(encoding="utf-8"))
         path = self.write_artifact("content", artifact_id, self.content_payload(strategy["artifact_id"], persona["artifact_id"]))
         if approve:
+            run = json.loads(self.run_path.read_text(encoding="utf-8"))
+            capability = run["payload"]["runtime_capabilities"]["capabilities"]["independent_agent_review"]
+            if capability.get("status") != "available":
+                self.configure_runtime()
+            audit_path = self.make_article_audit(path, f"article_audit_{artifact_id.removeprefix('content_')}")
+            self.link_article_audit(path, audit_path)
             run_cli("approve", str(path), "--gate", "G3", "--actor", "owner", "--decision", "approved")
         return path
 
@@ -197,7 +316,9 @@ class WorkflowCliTests(unittest.TestCase):
         schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
         self.assertEqual(schema["properties"]["schema_version"]["const"], "2.2.0")
         self.assertIn("accountStrategyPayload", schema["$defs"])
+        self.assertIn("articleAuditPayload", schema["$defs"])
         self.assertIn("inventoryItemPayload", schema["$defs"])
+        self.assertIn("independent_agent_review", schema["$defs"]["runtimeCapabilities"]["properties"]["capabilities"]["properties"])
         self.assertIn("scheduled_execution", schema["$defs"]["runtimeCapabilities"]["properties"]["capabilities"]["properties"])
         self.assertIn("schedule_method", schema["$defs"]["publicationPayload"]["properties"])
         self.assertIn("time_context", schema["$defs"]["reviewPayload"]["properties"])
@@ -213,6 +334,11 @@ class WorkflowCliTests(unittest.TestCase):
             with self.subTest(skill=path.parent.name):
                 self.assertIn("human-interface.md", text)
                 self.assertIn("HTML", text)
+        audit_skill = SKILL_ROOT.parent / "article-audit" / "SKILL.md"
+        audit_text = audit_skill.read_text(encoding="utf-8")
+        self.assertIn("独立", audit_text)
+        self.assertIn("只读", audit_text)
+        self.assertIn("article-audit", INSTALLER.read_text(encoding="utf-8"))
 
     def test_g0_advances_full_cycle_to_strategy(self) -> None:
         rejected = run_cli("approve", str(self.run_path), "--gate", "G0", "--actor", "owner", "--decision", "approved", expected=2)
@@ -287,9 +413,160 @@ class WorkflowCliTests(unittest.TestCase):
         run_portfolio("transition-inventory", str(inventory_path), "--to", "review_ready", "--content", str(content_path), "--actor", "agent", "--reason", "初稿完成")
         denied = run_portfolio("transition-inventory", str(inventory_path), "--to", "ready", "--actor", "agent", "--reason", "尝试入库", expected=2)
         self.assertIn("有效 G3", denied.stderr)
+        audit_path = self.make_article_audit(content_path)
+        self.link_article_audit(content_path, audit_path)
         run_cli("approve", str(content_path), "--gate", "G3", "--actor", "owner", "--decision", "approved")
         run_portfolio("transition-inventory", str(inventory_path), "--to", "ready", "--actor", "agent", "--reason", "G3 已批准")
         self.assertEqual(json.loads(inventory_path.read_text(encoding="utf-8"))["status"], "ready")
+
+    def test_g3_requires_a_valid_independent_audit(self) -> None:
+        self.approve_g0()
+        strategy_path = self.make_strategy()
+        persona_path = self.make_persona(strategy_path)
+        content_path = self.make_content(strategy_path, persona_path, approve=False)
+
+        missing = run_cli(
+            "approve", str(content_path), "--gate", "G3", "--actor", "owner",
+            "--decision", "approved", expected=2,
+        )
+        self.assertIn("尚未绑定独立文章审计", missing.stderr)
+
+        same_actor_path = self.make_article_audit(
+            content_path,
+            "article_audit_sameactor01",
+            reviewer_id="writer_agent_001",
+        )
+        same_actor = run_cli(
+            "link-article-audit", "--content", str(content_path), "--audit", str(same_actor_path),
+            "--actor", "orchestrator_agent", expected=2,
+        )
+        self.assertIn("actor_id 必须不同", same_actor.stderr)
+
+        unsafe_path = self.make_article_audit(content_path, "article_audit_unsafe001")
+        unsafe = json.loads(unsafe_path.read_text(encoding="utf-8"))
+        unsafe["payload"]["independence"]["prompt_injection_treated_as_data"] = False
+        workflow_cli.atomic_write_json(unsafe_path, unsafe)
+        unsafe_result = run_cli(
+            "link-article-audit", "--content", str(content_path), "--audit", str(unsafe_path),
+            "--actor", "orchestrator_agent", expected=2,
+        )
+        self.assertIn("prompt_injection_treated_as_data 必须为 true", unsafe_result.stderr)
+
+    def test_failed_audit_blocks_g3_and_human_decision_requires_notes(self) -> None:
+        self.approve_g0()
+        strategy_path = self.make_strategy()
+        persona_path = self.make_persona(strategy_path)
+        content_path = self.make_content(strategy_path, persona_path, approve=False)
+
+        failed_audit = self.make_article_audit(
+            content_path,
+            "article_audit_failed01",
+            verdict="audit_failed",
+        )
+        self.link_article_audit(content_path, failed_audit)
+        blocked = run_cli(
+            "approve", str(content_path), "--gate", "G3", "--actor", "owner",
+            "--decision", "approved", expected=2,
+        )
+        self.assertIn("审计未通过", blocked.stderr)
+
+        decision_audit = self.make_article_audit(
+            content_path,
+            "article_audit_decision01",
+            verdict="human_decision_required",
+        )
+        self.link_article_audit(content_path, decision_audit)
+        no_notes = run_cli(
+            "approve", str(content_path), "--gate", "G3", "--actor", "owner",
+            "--decision", "approved", expected=2,
+        )
+        self.assertIn("--notes", no_notes.stderr)
+        run_cli(
+            "approve", str(content_path), "--gate", "G3", "--actor", "owner",
+            "--decision", "approved", "--notes", "已确认该表述仅适用于当前案例",
+        )
+        content = json.loads(content_path.read_text(encoding="utf-8"))
+        self.assertTrue(workflow_cli.effective_content_approval(content, content_path))
+
+    def test_content_or_audit_change_invalidates_approval_and_blocks_publish(self) -> None:
+        self.approve_g0()
+        strategy_path = self.make_strategy()
+        persona_path = self.make_persona(strategy_path)
+        content_path = self.make_content(strategy_path, persona_path)
+        content = json.loads(content_path.read_text(encoding="utf-8"))
+        self.assertTrue(workflow_cli.effective_content_approval(content, content_path))
+
+        original_caption = content["payload"]["caption"]
+        content["payload"]["caption"] = "稿件已修改。"
+        workflow_cli.atomic_write_json(content_path, content)
+        changed_content = json.loads(content_path.read_text(encoding="utf-8"))
+        self.assertFalse(workflow_cli.effective_content_approval(changed_content, content_path))
+
+        changed_content["payload"]["caption"] = original_caption
+        workflow_cli.atomic_write_json(content_path, changed_content)
+        restored_content = json.loads(content_path.read_text(encoding="utf-8"))
+        self.assertTrue(workflow_cli.effective_content_approval(restored_content, content_path))
+
+        audit_ref = restored_content["payload"]["article_audit_ref"]
+        audit_path = self.root / audit_ref["artifact_path"]
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        audit["payload"]["scope"]["limitations"].append("绑定后改动审计记录")
+        workflow_cli.atomic_write_json(audit_path, audit)
+        self.assertFalse(workflow_cli.effective_content_approval(restored_content, content_path))
+
+        inventory_path = self.make_ready_inventory(strategy_path, persona_path, content_path)
+        strategy = json.loads(strategy_path.read_text(encoding="utf-8"))
+        inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        publication_path = self.write_artifact(
+            "publication",
+            "publication_staleaudit01",
+            self.publication_payload(strategy["artifact_id"], inventory["artifact_id"], restored_content["artifact_id"]),
+            status="review_required",
+        )
+        blocked = run_cli(
+            "approve", str(publication_path), "--gate", "G4", "--actor", "owner",
+            "--decision", "approved", expected=2,
+        )
+        self.assertIn("匹配的独立文章审计", blocked.stderr)
+
+    def test_high_risk_same_model_cannot_be_linked_as_passed(self) -> None:
+        self.approve_g0()
+        strategy_path = self.make_strategy()
+        persona_path = self.make_persona(strategy_path)
+        content_path = self.make_content(strategy_path, persona_path, approve=False)
+        audit_path = self.make_article_audit(
+            content_path,
+            "article_audit_highrisk01",
+            risk_level="high",
+            reviewer_model="model-a",
+        )
+        blocked = run_cli(
+            "link-article-audit", "--content", str(content_path), "--audit", str(audit_path),
+            "--actor", "orchestrator_agent", expected=2,
+        )
+        self.assertIn("缺少不同模型复核", blocked.stderr)
+
+    def test_content_render_shows_independent_audit_conclusion_and_findings(self) -> None:
+        self.approve_g0()
+        strategy_path = self.make_strategy()
+        persona_path = self.make_persona(strategy_path)
+        content_path = self.make_content(strategy_path, persona_path, approve=False)
+        audit_path = self.make_article_audit(
+            content_path,
+            "article_audit_render01",
+            verdict="human_decision_required",
+        )
+        self.link_article_audit(content_path, audit_path)
+        output = self.root / "renders" / "content-audit.html"
+        run_cli("render", str(content_path), "--output", str(output))
+        rendered = output.read_text(encoding="utf-8")
+        self.assertIn("独立文章审计", rendered)
+        self.assertIn("需要内容负责人决定", rendered)
+        self.assertIn("结论的适用边界需要内容负责人判断", rendered)
+        self.assertIn("定稿前应解决", rendered)
+        self.assertNotIn("human_decision_required", rendered)
+        self.assertNotIn("logic_and_consistency", rendered)
+        self.assertNotIn("<pre", rendered)
 
     def test_g4_blocks_prohibited_policy_and_unknown_needs_human(self) -> None:
         self.approve_g0()
@@ -467,7 +744,7 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertEqual(publication["payload"]["published_at_source"], "human_confirmed")
         self.assertTrue(any(item["summary"] == "账号负责人核对创作中心" for item in publication["provenance"]))
 
-    def test_all_ten_artifact_contracts_validate(self) -> None:
+    def test_all_eleven_artifact_contracts_validate(self) -> None:
         strategy_payload = self.strategy_payload()
         persona_payload = self.persona_payload("account_strategy_demo01")
         topic_payload = {
@@ -487,12 +764,15 @@ class WorkflowCliTests(unittest.TestCase):
             "persona_validation": {"persona_mode": "assumed", "hypothesis_results": [], "revision_recommended": False, "evidence_refs": []}, "trust_observations": [], "long_tail_observations": [], "limitations": ["样本不足"],
         }
         experiment_payload = {"review_artifact_id": "review_demo001", "hypothesis": "标题影响点击", "intervention_type": "creative", "independent_variable": "标题", "control": "正文不变", "target_metric": {"name": "click_rate"}, "guardrails": [], "observation_window": "72h", "sample_size_plan": "四个样本", "stop_rule": "达到样本数", "state": "proposed", "result": None, "persona_change_proposal": None, "strategy_change_proposal": None}
+        content_contract_path = self.write_artifact("content", "content_contract01", content_payload)
+        audit_contract_path = self.make_article_audit(content_contract_path, "article_audit_contract01")
         fixtures = [
             json.loads(self.run_path.read_text(encoding="utf-8")),
             json.loads(self.write_artifact("account_strategy", "account_strategy_contract01", strategy_payload).read_text(encoding="utf-8")),
             json.loads(self.write_artifact("persona", "persona_contract01", persona_payload).read_text(encoding="utf-8")),
             json.loads(self.write_artifact("topic_report", "topic_report_contract01", topic_payload).read_text(encoding="utf-8")),
-            json.loads(self.write_artifact("content", "content_contract01", content_payload).read_text(encoding="utf-8")),
+            json.loads(content_contract_path.read_text(encoding="utf-8")),
+            json.loads(audit_contract_path.read_text(encoding="utf-8")),
             json.loads(self.write_artifact("inventory_item", "inventory_contract01", inventory_payload, status="idea").read_text(encoding="utf-8")),
             json.loads(self.write_artifact("publication", "publication_contract01", publication_payload, status="draft").read_text(encoding="utf-8")),
             json.loads(self.write_artifact("metrics_snapshot", "metrics_contract01", metrics_payload, status="ready").read_text(encoding="utf-8")),

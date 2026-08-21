@@ -274,8 +274,8 @@ def command_transition_inventory(args: argparse.Namespace) -> None:
     content_path: Path | None = None
     if target in {"review_ready", "ready", "scheduled"}:
         content, content_path = resolve_content(root, inventory, args.content)
-    if target in {"ready", "scheduled"} and content and not core.effective_approval(content, "G3"):
-        raise core.WorkflowError("库存进入 ready/scheduled 前需要 content 的有效 G3 批准")
+    if target in {"ready", "scheduled"} and content and not core.effective_content_approval(content, content_path):
+        raise core.WorkflowError("库存进入 ready/scheduled 前需要 content 的有效 G3 和匹配的独立文章审计")
     if target == "scheduled" and not args.planned_at:
         raise core.WorkflowError("进入 scheduled 必须提供 --planned-at")
     if target == "held" and not args.reason.strip():
@@ -296,8 +296,8 @@ def command_transition_inventory(args: argparse.Namespace) -> None:
         if publication_payload.get("strategy_artifact_id") != payload.get("strategy_artifact_id"):
             raise core.WorkflowError("publication.strategy_artifact_id 与库存项不一致")
         content, content_path = resolve_content(root, inventory, None)
-        if not core.effective_approval(content, "G3"):
-            raise core.WorkflowError("库存进入 published 前关联 content 的 G3 必须仍然有效")
+        if not core.effective_content_approval(content, content_path):
+            raise core.WorkflowError("库存进入 published 前关联 content 的 G3 和独立文章审计必须仍然有效")
     timestamp = core.now_iso()
     before_status = inventory["status"]
     if content and content_path:

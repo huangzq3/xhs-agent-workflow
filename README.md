@@ -1,14 +1,19 @@
-# 小红书运营工作流 V2.2.2
+# 小红书运营工作流 V2.3.0
 
 这是一套不绑定具体 Agent 产品的小红书运营工作流，覆盖账号运营策略、试运营定位、选题分析、内容创作、内容库存、发布、数据复盘和迭代实验。
 
-V2.2.2 在中文人工体验基础上补齐发布和复盘时间闭环：
+V2.3.0 新增通用、独立的文章审计门禁，并保留 V2.2.2 的发布与复盘时间闭环：
 
 - 所有提问跟随内容负责人当前使用的语言，默认使用简体中文；
 - 不再要求内容负责人理解阶段号、英文状态值或机器字段；
 - 人工审阅与审计统一交付中文可视化 HTML；
 - 不在对话或人工报告中输出原始 JSON；
-- 内部机器数据契约保持不变，自动化交接不会因展示层调整而失效。
+- 内部机器数据契约以向后兼容方式演进，自动化交接不会因展示层调整而失效；
+- 写作 Agent 只交付冻结稿件，不审查自己的内容；
+- 审计 Agent 必须使用不同身份、全新上下文和只读权限，并对稿件独立重新提取主张；
+- 审计规则是通用的事实、引语、逻辑、结构、语言和跨表面一致性检查，品牌专属规则只能作为显式外部配置叠加；
+- 稿件、审计记录或定稿确认任一不匹配，内容都不能进入可发布库存或发布门禁；
+- 高风险内容缺少不同模型复核时，不得得出无条件通过结论；
 - 支持平台原生定时、运行工具到点唤醒和人工到点交接三种定时发布方式；
 - 定时发布必须声明时区和最晚允许执行时间，错过后不自动补发；
 - 短期与长尾复盘统一从平台确认的实际上线时间开始计算，不使用计划发布时间代替。
@@ -21,7 +26,8 @@ V2.2.2 在中文人工体验基础上补齐发布和复盘时间闭环：
 | 账号运营策略 | 账号阶段、内容目标、发布节奏、库存和复盘规则 | 是否按该策略运营 |
 | 账号定位 | 身份、受众、差异化、边界和试运营验证计划 | 是否按该定位开展试运营 |
 | 选题分析 | 候选选题、证据、判断把握度、风险与局限 | 选择哪个选题进入创作 |
-| 内容创作 | 标题、正文、图片或视频、事实与素材权利 | 是否定稿 |
+| 内容创作 | 标题、正文、图片或视频、事实与素材权利 | 是否冻结当前稿件并送交独立审计 |
+| 独立文章审计 | 独立审计结论、风险和分级问题 | 审计未通过时修订；需要人工取舍时记录理由后再决定是否定稿 |
 | 发布 | 目标账号、最终预览、立即或定时方式、时区、最晚执行时间和规则例外 | 是否授权一次发布或排期尝试 |
 | 数据复盘 | 实际上线时间、观察周期、流量、信任、长尾表现和其他可能解释 | 是否接受复盘与下一步建议 |
 | 迭代实验 | 唯一调整项、指标、观察时间和停止条件 | 是否投入下一轮验证 |
@@ -37,7 +43,7 @@ V2.2.2 在中文人工体验基础上补齐发布和复盘时间闭环：
 
 HTML 不参与下游自动化解析。机器层也不得直接粘贴给内容负责人。这样既保留自动化稳定性，也避免人工界面被技术术语淹没。
 
-## 七个 Skill
+## 八个 Skill
 
 | Skill | 业务职责 |
 |---|---|
@@ -45,6 +51,7 @@ HTML 不参与下游自动化解析。机器层也不得直接粘贴给内容负
 | xhs-persona | 试运营定位、已验证定位与版本修订 |
 | xhs-topic-report | 证据化选题研究、竞品拆解和候选比较 |
 | xhs-writer | 图文、视频或纯文字创作，素材权利与原生生图交接 |
+| article-audit | 在全新、只读上下文中独立审计通用文章，输出可追溯的分级问题清单，不改稿也不做人工批准 |
 | xhs-publish | 发布规则检查、立即或定时发布、最终预览、一次尝试与实际上线结果核对 |
 | xhs-content-review | 从实际上线时间起算的短期、信任与长尾数据复盘 |
 | xhs-iterate | 单一调整项实验和账号定位或运营策略修订建议 |
@@ -56,6 +63,7 @@ HTML 不参与下游自动化解析。机器层也不得直接粘贴给内容负
 - 本地保存工作数据；
 - 追加审计记录；
 - 接收人工确认；
+- 启动与写作者分离的全新、只读审计上下文；
 - 网页资料研究；
 - 使用已登录的平台页面；
 - 使用当前工具的原生生图能力；
@@ -97,6 +105,8 @@ bash install.sh --target /absolute/path/to/active-agent/skills --upgrade
 
 人工审计报告按时间展示操作、决定与异常状态，并提供事件数量、人工决定数量和需要关注的状态。报告不包含机器原始数据。
 
+内容定稿页额外展示独立文章审计的结论、风险、未解决问题和修订方向。这份审计记录与运营操作的人工审计报告是两类不同产物。
+
 ## 人工参与与确认
 
 本工作流中的人工确认具备以下约束：
@@ -115,7 +125,9 @@ bash install.sh --target /absolute/path/to/active-agent/skills --upgrade
 <details>
 <summary>运行助手与开发者说明</summary>
 
-内部机器事实源仍为 JSON，Schema 版本仍是 2.2.0。V2.2.2 以向后兼容方式增加可选的定时发布、实际上线时间依据和复盘时间锚点字段。
+内部机器事实源仍为 JSON，核心 Schema 版本仍是 2.2.0。V2.3.0 以向后兼容方式增加可选的 content 作者/审计引用和新的 `article_audit` artifact；独立审计契约单独使用 1.0.0。
+
+旧 artifact 仍可读取与校验，但安全门禁不沿用旧的无审计定稿权限。已有 content 在新版中进入可发布库存或发布前，需要补记作者身份、完成独立审计并重新进行内容定稿确认。
 
 常用内部命令：
 
@@ -128,6 +140,13 @@ python3 "$CORE/scripts/workflow_cli.py" init --root "$WORKSPACE" --account-id ac
 python3 "$CORE/scripts/workflow_cli.py" new-run --root "$WORKSPACE" --account-id account_slug --objective "本轮明确目标" --run-type full_cycle --actor content-owner
 
 python3 "$CORE/scripts/workflow_cli.py" validate /path/to/artifact.json
+
+python3 /absolute/path/to/skills/article-audit/scripts/article_audit_cli.py validate /path/to/article-audit.json --content /path/to/content.json
+
+# 通用 Markdown、纯文本或其他冻结文件
+python3 /absolute/path/to/skills/article-audit/scripts/article_audit_cli.py validate /path/to/article-audit.json --target /path/to/frozen-article
+
+python3 "$CORE/scripts/workflow_cli.py" link-article-audit --content /path/to/content.json --audit /path/to/article-audit.json --actor orchestrator-agent
 
 python3 "$CORE/scripts/workflow_cli.py" render /path/to/artifact.json --output /path/to/review.html
 
@@ -153,10 +172,11 @@ python3 "$CORE/scripts/workflow_cli.py" approve /path/to/artifact.json --gate G0
 ~~~bash
 python3 -m unittest discover -s skills/xhs-workflow/tests -v
 python3 -m unittest discover -s skills/xhs-writer/tests -v
+python3 -m unittest discover -s skills/article-audit/tests -v
 
 PYTHONPYCACHEPREFIX=/tmp/xhs-workflow-pycache python3 -m compileall -q skills
 
 bash -n install.sh
 ~~~
 
-测试覆盖机器契约、账号策略与定位分层、人工确认失效、发布防重、定时发布到点复核与防止过期补发、实际上线时间锚定的短期和长尾复盘、内容库存、HTML 安全转义、中文术语映射、人工审计 HTML、原生生图交接、素材权利和去水印阻断。
+测试覆盖机器契约、写审身份/上下文/只读分离、提示注入边界、高风险模型多样性、稿件与审计指纹失效、定稿和发布阻断、账号策略与定位分层、发布防重、定时发布到点复核与防止过期补发、实际上线时间锚定的短期和长尾复盘、内容库存、HTML 安全转义、中文术语映射、原生生图交接、素材权利和去水印阻断。

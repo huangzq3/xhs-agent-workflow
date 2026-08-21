@@ -25,9 +25,10 @@ description: 基于已确认的小红书账号运营策略、账号定位和选�
 7. 按 [references/image-sourcing.md](references/image-sourcing.md) 建立素材权利台账。权利尚未核对的素材不得进入内容定稿确认。
 8. 需要生图时按 [references/image-generation.md](references/image-generation.md) 创建 `image_job` JSON，再调用当前 Agent 已展示的原生生图能力。不内置生图接口，不根据 Agent 品牌猜测工具名。
 9. 使用参考图前核对启动时确认的外部处理范围、当前能力是否支持参考图，以及该素材是否已获外部处理许可。
-10. 写入 `content` JSON，记录修订号和 `change_summary`，运行核心契约与素材校验。
-11. 生成中文 HTML 预览和卡片图，用业务语言展示相对上一版的修改内容。
-12. 请内容负责人完成“内容定稿确认”。任何改文、换图或调整顺序都会使旧确认失效；确认后由核心工作流建立或推进内容库存。
+10. 写入 `content` JSON，记录修订号、`change_summary` 和可追溯的 `authorship`；新稿的 `article_audit_ref` 必须为 null，由核心工作流在独立审计完成后绑定。
+11. 运行核心契约与素材校验，生成中文 HTML 预览和卡片图，用业务语言展示相对上一版的修改内容。
+12. 将冻结稿件交回 xhs-workflow。xhs-writer 到此停止：不生产 `article_audit`、不指定自己为审计者、不宣告稿件审计通过，也不发起内容定稿确认。
+13. 如收到独立审计问题清单，只根据问题和内容负责人的决定建立新修订。新修订必须清空旧审计引用，并重新进入独立审计。
 
 ## 内容形式
 
@@ -42,5 +43,6 @@ description: 基于已确认的小红书账号运营策略、账号定位和选�
 - 不去除第三方水印，不把裁剪、模糊或重绘视为取得授权。
 - 生成素材仍要记录 `image_job`、实际 `capability_id`、输入来源和潜在权利限制。
 - 医疗、金融、法律等高风险主张必须提示额外事实核查。
+- 高风险内容由 xhs-workflow 安排不同模型复核；写作者不得把自评当作该复核。
 
 素材分析按 [references/material-intake.md](references/material-intake.md) 执行；生成图片按 [references/image-generation.md](references/image-generation.md) 执行，机器契约见 [references/image-job.schema.json](references/image-job.schema.json)。

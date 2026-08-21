@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import html
+import importlib.util
 import json
 import re
 import sys
@@ -22,6 +23,7 @@ ARTIFACT_TYPES = {
     "persona",
     "topic_report",
     "content",
+    "article_audit",
     "inventory_item",
     "publication",
     "metrics_snapshot",
@@ -73,6 +75,7 @@ PAYLOAD_REQUIRED = {
     "persona": {"revision", "supersedes_artifact_id", "strategy_artifact_id", "mode", "hypotheses", "validation_plan", "identity", "niche", "audience", "differentiation", "content_pillars", "voice", "boundaries"},
     "topic_report": {"objective", "strategy_artifact_id", "persona_artifact_id", "research_mode", "requested_topics", "evidence", "candidates", "selected_topic_ids", "limitations"},
     "content": {"revision", "strategy_artifact_id", "persona_artifact_id", "topic_report_artifact_id", "topic_id", "content_objective", "content_sequence_no", "format", "title", "caption", "hashtags", "claims", "personal_experiences", "assets", "change_summary"},
+    "article_audit": {"contract_version", "content_artifact_id", "content_revision", "target_uri", "content_sha256", "hash_mode", "author", "reviewer", "independence", "ruleset", "scope", "risk", "claim_inventory", "findings", "summary"},
     "inventory_item": {"revision", "strategy_artifact_id", "persona_artifact_id", "topic_report_artifact_id", "topic_id", "content_artifact_id", "content_artifact_path", "publication_artifact_id", "publication_artifact_path", "content_sequence_no", "content_objective", "format", "working_title", "same_topic_key", "state", "planned_publish_at", "hold_reason", "policy_check", "measurement_schedule", "history"},
     "publication": {"strategy_artifact_id", "inventory_item_artifact_id", "content_artifact_id", "target_account_id", "platform", "state", "visibility", "asset_order", "policy_check", "post_publish_actions", "attempts"},
     "metrics_snapshot": {"content_artifact_id", "publication_artifact_id", "format", "captured_at", "window", "measurement_kind", "checkpoint_days", "prior_snapshot_artifact_id", "stock_metrics", "flow_metrics", "derived_metrics", "trust_metrics", "qualitative_metrics", "missing_fields", "source"},
@@ -88,7 +91,7 @@ REQUIRED_CAPABILITY_KEYS = {
     "native_image_generation",
     "metrics_collection",
 }
-OPTIONAL_CAPABILITY_KEYS = {"scheduled_execution"}
+OPTIONAL_CAPABILITY_KEYS = {"independent_agent_review", "scheduled_execution"}
 CAPABILITY_KEYS = REQUIRED_CAPABILITY_KEYS | OPTIONAL_CAPABILITY_KEYS
 CAPABILITY_STATUSES = {"available", "unavailable", "unknown"}
 EXECUTION_MODES = {"undetermined", "full", "assisted", "document_only"}
@@ -148,6 +151,13 @@ ACCOUNT_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,63}$")
 SHA_RE = re.compile(r"^[a-f0-9]{64}$")
 WINDOW_RE = re.compile(r"^(?:发布后)?\s*(\d+(?:\.\d+)?)\s*(h|d|小时|天)$", re.IGNORECASE)
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "references" / "schemas" / "artifact.schema.json"
+ARTICLE_AUDIT_MODULE_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "article-audit"
+    / "scripts"
+    / "article_audit_cli.py"
+)
+_ARTICLE_AUDIT_MODULE: Any | None = None
 
 # Internal codes stay stable for machine handoffs. Everything below is the human
 # presentation dictionary and must be used before showing a value to a person.
@@ -157,6 +167,7 @@ ARTIFACT_LABELS = {
     "persona": "账号定位",
     "topic_report": "选题分析",
     "content": "内容稿件",
+    "article_audit": "独立文章审计",
     "inventory_item": "内容库存项",
     "publication": "发布记录",
     "metrics_snapshot": "数据快照",
@@ -285,6 +296,37 @@ VALUE_LABELS = {
     "hypothesis": "待验证假设",
     "human": "内容负责人",
     "agent": "运行助手",
+    "passed": "审计通过",
+    "audit_failed": "审计未通过",
+    "human_decision_required": "需要内容负责人决定",
+    "P0": "必须先解决",
+    "P1": "定稿前应解决",
+    "P2": "优化建议",
+    "independent_full_text_review": "独立通读并重新提取主张",
+    "canonical_json": "规范化内容指纹",
+    "raw_bytes": "原始文件指纹",
+    "article-audit-core": "通用文章审计核心规则",
+    "payload.title": "标题",
+    "payload.caption": "正文",
+    "payload.hashtags": "话题标签",
+    "payload.cards": "图文卡片",
+    "payload.shots": "视频分镜",
+    "fact_and_source": "事实与来源",
+    "quote_and_attribution": "引语与归属",
+    "logic_and_consistency": "逻辑与一致性",
+    "structure_and_redundancy": "结构与重复",
+    "language_and_terminology": "语言与术语",
+    "cross_surface_consistency": "跨表面一致性",
+    "uncertainty_and_decisions": "不确定信息与待决定事项",
+    "custom_profile": "显式定制规则",
+    "material": "关键主张",
+    "non_material": "非关键主张",
+    "verified": "已核实",
+    "unverified": "无法核实",
+    "contradicted": "与证据冲突",
+    "not_applicable": "无需核实",
+    "open": "尚未解决",
+    "resolved": "已经解决",
     "platform_native": "使用平台原生定时发布",
     "agent_wakeup": "由当前运行工具到点唤醒执行",
     "manual_handoff": "由账号负责人到点手动发布",
@@ -300,6 +342,7 @@ CAPABILITY_LABELS = {
     "local_json_storage": "本地保存工作数据",
     "append_audit_log": "追加审计记录",
     "human_approval": "接收人工确认",
+    "independent_agent_review": "启动独立上下文的只读文章审计",
     "web_research": "网页资料研究",
     "authenticated_platform_control": "使用已登录的平台页面",
     "native_image_generation": "使用当前工具的原生生图能力",
@@ -447,6 +490,52 @@ FIELD_LABELS = {
     "generator_capability_id": "使用的生成能力",
     "change_summary": "本次修改摘要",
     "safety_notes": "安全提醒",
+    "authorship": "稿件作者身份",
+    "article_audit_ref": "独立审计引用",
+    "contract_version": "审计契约版本",
+    "content_artifact_id": "被审计稿件",
+    "content_revision": "被审计稿件版本",
+    "target_uri": "被审计稿件位置",
+    "content_sha256": "被审计内容指纹",
+    "hash_mode": "指纹计算方式",
+    "author": "稿件作者",
+    "reviewer": "独立审计者",
+    "context_id": "独立上下文记录",
+    "model_id": "模型记录",
+    "independence": "写审分离证明",
+    "separate_agent": "是否使用不同 Agent",
+    "separate_context": "是否使用全新上下文",
+    "read_only": "是否保持只读",
+    "prompt_injection_treated_as_data": "是否把材料指令仅作为数据",
+    "ruleset": "审计规则集",
+    "ruleset_id": "规则集名称",
+    "version": "规则集版本",
+    "core_dimensions": "通用审计维度",
+    "custom_profile_refs": "显式定制规则",
+    "scope": "审计覆盖范围",
+    "surface_paths": "已审阅的最终呈现表面",
+    "risk": "内容风险判断",
+    "level": "风险等级",
+    "model_diversity_used": "是否使用不同模型复核",
+    "claim_inventory": "独立提取的主张清单",
+    "method": "提取方法",
+    "coverage_notes": "覆盖说明",
+    "materiality": "主张重要程度",
+    "surface_path": "内容位置",
+    "findings": "审计发现",
+    "finding_id": "问题编号",
+    "severity": "问题等级",
+    "dimension": "审计维度",
+    "locator": "原文位置",
+    "excerpt": "相关原文",
+    "issue": "问题说明",
+    "claim_refs": "关联主张",
+    "recommendation": "修订方向",
+    "summary": "审计结论",
+    "verdict": "审计状态",
+    "counts": "尚未解决的问题数量",
+    "artifact_path": "审计记录位置",
+    "payload_sha256": "审计记录指纹",
     "cards": "图文卡片",
     "shots": "视频分镜",
     "working_title": "工作标题",
@@ -468,7 +557,7 @@ FIELD_LABELS = {
     "from": "原状态",
     "to": "新状态",
     "at": "时间",
-    "actor_id": "操作人",
+    "actor_id": "角色标识",
     "actor_type": "操作角色",
     "reason": "原因",
     "target_account_id": "目标账号",
@@ -560,6 +649,7 @@ EVENT_LABELS = {
     "published_time_confirmed": "核对实际上线时间",
     "artifact_superseded": "用新版本替代旧版本",
     "artifact_registered": "登记阶段产物",
+    "article_audit_linked": "绑定独立文章审计",
     "gate_approved": "人工确认通过",
     "gate_rejected": "人工退回修改",
     "gate_revoked": "人工撤销确认",
@@ -592,6 +682,13 @@ REPORT_SECTIONS = {
         ("画面与素材", ("cards", "shots", "assets")),
         ("真实性核对", ("claims", "personal_experiences", "safety_notes")),
         ("修改说明", ("change_summary",)),
+    ],
+    "article_audit": [
+        ("审计结论", ("summary", "risk")),
+        ("写审分离", ("independence",)),
+        ("覆盖范围与规则", ("ruleset", "scope")),
+        ("独立提取的主张", ("claim_inventory",)),
+        ("审计发现", ("findings",)),
     ],
     "inventory_item": [
         ("库存安排", ("working_title", "state", "content_objective", "format", "planned_publish_at", "hold_reason")),
@@ -657,6 +754,26 @@ def atomic_write_json(path: Path, value: dict[str, Any]) -> None:
     temp = path.with_suffix(path.suffix + ".tmp")
     temp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temp.replace(path)
+
+
+def article_audit_contract() -> Any:
+    """Load the standalone article-audit contract without coupling writer logic to it."""
+    global _ARTICLE_AUDIT_MODULE
+    if _ARTICLE_AUDIT_MODULE is not None:
+        return _ARTICLE_AUDIT_MODULE
+    if not ARTICLE_AUDIT_MODULE_PATH.is_file():
+        raise WorkflowError(
+            "缺少独立文章审计契约；请确认 article-audit Skill 与 xhs-workflow 一起安装"
+        )
+    spec = importlib.util.spec_from_file_location(
+        "xhs_article_audit_contract", ARTICLE_AUDIT_MODULE_PATH
+    )
+    if spec is None or spec.loader is None:
+        raise WorkflowError("无法加载独立文章审计契约")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _ARTICLE_AUDIT_MODULE = module
+    return module
 
 
 def approval_view(value: Any) -> Any:
@@ -1214,6 +1331,40 @@ def validate_artifact(artifact: dict[str, Any]) -> list[str]:
             if asset.get("rights_basis") == "generated":
                 if not asset.get("generation_job_id") or not asset.get("generator_capability_id"):
                     errors.append(f"assets[{index}] 生成素材必须记录 generation_job_id 和 generator_capability_id")
+        authorship = payload.get("authorship")
+        if authorship is not None:
+            authorship = require_object(authorship, "payload.authorship", errors)
+            if authorship.get("actor_type") not in {"agent", "human"}:
+                errors.append("payload.authorship.actor_type 无效")
+            if not isinstance(authorship.get("actor_id"), str) or not authorship.get("actor_id", "").strip():
+                errors.append("payload.authorship.actor_id 必须是非空字符串")
+            if authorship.get("actor_type") == "agent" and (
+                not isinstance(authorship.get("context_id"), str)
+                or not authorship.get("context_id", "").strip()
+            ):
+                errors.append("Agent 作者必须记录 payload.authorship.context_id")
+            if authorship.get("model_id") is not None and (
+                not isinstance(authorship.get("model_id"), str)
+                or not authorship.get("model_id", "").strip()
+            ):
+                errors.append("payload.authorship.model_id 必须是非空字符串或 null")
+        audit_ref = payload.get("article_audit_ref")
+        if audit_ref is not None:
+            audit_ref = require_object(audit_ref, "payload.article_audit_ref", errors)
+            for field in ("artifact_id", "artifact_path", "payload_sha256", "content_sha256"):
+                if field not in audit_ref:
+                    errors.append(f"payload.article_audit_ref 缺少 {field}")
+            if not isinstance(audit_ref.get("artifact_id"), str) or not audit_ref.get("artifact_id", "").startswith("article_audit_"):
+                errors.append("payload.article_audit_ref.artifact_id 无效")
+            for field in ("payload_sha256", "content_sha256"):
+                value = audit_ref.get(field)
+                if not isinstance(value, str) or not SHA_RE.fullmatch(value):
+                    errors.append(f"payload.article_audit_ref.{field} 无效")
+    elif artifact_type == "article_audit":
+        try:
+            errors.extend(article_audit_contract().validate_audit_document(artifact))
+        except (WorkflowError, OSError) as exc:
+            errors.append(str(exc))
     elif artifact_type == "inventory_item":
         state = payload.get("state")
         if state not in INVENTORY_STATES:
@@ -1475,6 +1626,102 @@ def find_workspace(start: Path) -> Path:
     raise WorkflowError(f"无法从 {start} 定位 workspace.json")
 
 
+def workspace_relative_path(root: Path, raw_path: str, field: str) -> Path:
+    candidate = Path(raw_path)
+    path = (candidate if candidate.is_absolute() else root / candidate).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise WorkflowError(f"{field} 越出当前工作区") from exc
+    return path
+
+
+def require_independent_review_capability(root: Path, content: dict[str, Any]) -> None:
+    run_id = content.get("run_id")
+    run = load_json(root / "runs" / str(run_id) / "run.json")
+    capability = (
+        run.get("payload", {})
+        .get("runtime_capabilities", {})
+        .get("capabilities", {})
+        .get("independent_agent_review", {})
+    )
+    if capability.get("status") != "available" or not capability.get("capability_id"):
+        raise WorkflowError(
+            "本轮尚未确认可启动独立上下文的文章审计 Agent，不能进入独立审计或内容定稿"
+        )
+
+
+def load_linked_article_audit(
+    content: dict[str, Any],
+    content_path: Path,
+) -> tuple[dict[str, Any], Path]:
+    root = find_workspace(content_path)
+    ref = content.get("payload", {}).get("article_audit_ref")
+    if not isinstance(ref, dict):
+        raise WorkflowError("content 尚未绑定独立文章审计")
+    raw_audit_path = ref.get("artifact_path")
+    if not isinstance(raw_audit_path, str) or not raw_audit_path:
+        raise WorkflowError("content.article_audit_ref 缺少审计记录位置")
+    audit_path = workspace_relative_path(root, raw_audit_path, "独立审计记录位置")
+    audit = load_json(audit_path)
+    if audit.get("artifact_type") != "article_audit":
+        raise WorkflowError("content.article_audit_ref 未指向 article_audit artifact")
+    if audit.get("artifact_id") != ref.get("artifact_id"):
+        raise WorkflowError("content.article_audit_ref 的 artifact_id 与文件不一致")
+    if audit.get("account_id") != content.get("account_id") or audit.get("run_id") != content.get("run_id"):
+        raise WorkflowError("独立审计与 content 的 account_id/run_id 不一致")
+    audit_errors = validate_artifact(audit)
+    binding_errors = article_audit_contract().validate_audit_document(audit, content=content)
+    errors = audit_errors + [item for item in binding_errors if item not in audit_errors]
+    if errors:
+        raise WorkflowError("独立文章审计未通过校验：" + "; ".join(errors))
+    actual_audit_hash = article_audit_contract().audit_payload_hash(audit)
+    if ref.get("payload_sha256") != actual_audit_hash:
+        raise WorkflowError("独立审计 artifact 已在绑定后发生变化")
+    actual_content_hash = article_audit_contract().auditable_content_hash(content)
+    if ref.get("content_sha256") != actual_content_hash:
+        raise WorkflowError("content 已在独立审计后发生变化，必须重新审计")
+    try:
+        content_relative = str(content_path.resolve().relative_to(root))
+    except ValueError as exc:
+        raise WorkflowError("content 越出当前工作区") from exc
+    if audit.get("payload", {}).get("target_uri") != content_relative:
+        raise WorkflowError("独立审计记录的 target_uri 与当前 content 路径不一致")
+    return audit, audit_path
+
+
+def latest_effective_gate_approval(
+    artifact: dict[str, Any], gate: str
+) -> dict[str, Any] | None:
+    current_hash = payload_hash(artifact, gate)
+    approvals = artifact.get("approvals", [])
+    if not isinstance(approvals, list):
+        return None
+    for approval in reversed(approvals):
+        if not isinstance(approval, dict) or approval.get("gate") != gate:
+            continue
+        if approval.get("decision") != "approved":
+            return None
+        return approval if approval.get("payload_sha256") == current_hash else None
+    return None
+
+
+def effective_content_approval(content: dict[str, Any], content_path: Path) -> bool:
+    approval = latest_effective_gate_approval(content, "G3")
+    if approval is None:
+        return False
+    try:
+        audit, _ = load_linked_article_audit(content, content_path)
+    except WorkflowError:
+        return False
+    verdict = audit.get("payload", {}).get("summary", {}).get("verdict")
+    if verdict == "passed":
+        return True
+    if verdict == "human_decision_required":
+        return bool(str(approval.get("notes") or "").strip())
+    return False
+
+
 def append_audit(root: Path, event: dict[str, Any]) -> None:
     audit_path = root / "audit" / "events.ndjson"
     audit_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1683,6 +1930,75 @@ def command_validate_workspace(args: argparse.Namespace) -> None:
     print(f"PASS: {len(files)} artifacts")
 
 
+def command_link_article_audit(args: argparse.Namespace) -> None:
+    content_path = Path(args.content).resolve()
+    audit_path = Path(args.audit).resolve()
+    content = load_json(content_path)
+    audit = load_json(audit_path)
+    if content.get("artifact_type") != "content":
+        raise WorkflowError("--content 必须指向 content artifact")
+    if audit.get("artifact_type") != "article_audit":
+        raise WorkflowError("--audit 必须指向 article_audit artifact")
+    if effective_approval(content, "G3"):
+        raise WorkflowError("当前 content 已具有有效 G3；请先由内容负责人撤销定稿确认")
+    content_errors = validate_artifact(content)
+    if content_errors:
+        raise WorkflowError("content 未通过校验：" + "; ".join(content_errors))
+    audit_errors = validate_artifact(audit)
+    if audit_errors:
+        raise WorkflowError("article_audit 未通过校验：" + "; ".join(audit_errors))
+    root = find_workspace(content_path)
+    audit_root = find_workspace(audit_path)
+    if audit_root != root:
+        raise WorkflowError("content 与 article_audit 必须位于同一工作区")
+    require_independent_review_capability(root, content)
+    try:
+        content_relative = str(content_path.relative_to(root))
+        audit_relative = str(audit_path.relative_to(root))
+    except ValueError as exc:
+        raise WorkflowError("content 与 article_audit 必须位于当前工作区") from exc
+    if audit.get("payload", {}).get("target_uri") != content_relative:
+        raise WorkflowError("article_audit.target_uri 与当前 content 路径不一致")
+    binding_errors = article_audit_contract().validate_audit_document(audit, content=content)
+    if binding_errors:
+        raise WorkflowError("article_audit 与 content 绑定校验失败：" + "; ".join(binding_errors))
+    content_hash = article_audit_contract().auditable_content_hash(content)
+    content["payload"]["article_audit_ref"] = {
+        "artifact_id": audit["artifact_id"],
+        "artifact_path": audit_relative,
+        "payload_sha256": article_audit_contract().audit_payload_hash(audit),
+        "content_sha256": content_hash,
+    }
+    before = content.get("status")
+    content["status"] = "review_required"
+    content["updated_at"] = now_iso()
+    linked_errors = validate_artifact(content)
+    if linked_errors:
+        raise WorkflowError("绑定审计后的 content 不合法：" + "; ".join(linked_errors))
+    run_path = root / "runs" / str(content.get("run_id")) / "run.json"
+    run = load_json(run_path)
+    run["payload"]["artifact_paths"]["article_audit"] = audit_relative
+    run["payload"]["gate_status"]["G3"] = "pending"
+    run["payload"]["current_stage"] = "content"
+    run["updated_at"] = now_iso()
+    run_errors = validate_artifact(run)
+    if run_errors:
+        raise WorkflowError("登记独立审计后的 run manifest 不合法：" + "; ".join(run_errors))
+    atomic_write_json(content_path, content)
+    atomic_write_json(run_path, run)
+    audit_event(
+        root,
+        content,
+        args.actor,
+        args.actor_type,
+        "article_audit_linked",
+        audit["artifact_id"],
+        before,
+        content["status"],
+    )
+    print(content_path)
+
+
 def command_approve(args: argparse.Namespace) -> None:
     path = Path(args.path).resolve()
     artifact = load_json(path)
@@ -1697,6 +2013,20 @@ def command_approve(args: argparse.Namespace) -> None:
             raise WorkflowError("账号战略 G1 批准前至少需要一条 stage_evidence")
         if not strategy_payload.get("content_objectives"):
             raise WorkflowError("账号战略 G1 批准前至少需要一个 content_objective")
+    if args.decision == "approved" and args.gate == "G3":
+        content_payload = artifact.get("payload", {})
+        if not isinstance(content_payload.get("authorship"), dict):
+            raise WorkflowError("G3 批准前必须记录稿件作者身份")
+        root = find_workspace(path)
+        require_independent_review_capability(root, artifact)
+        audit, _ = load_linked_article_audit(artifact, path)
+        verdict = audit.get("payload", {}).get("summary", {}).get("verdict")
+        if verdict == "audit_failed":
+            raise WorkflowError("独立文章审计未通过，不能批准 G3")
+        if verdict == "human_decision_required" and not str(args.notes or "").strip():
+            raise WorkflowError("独立审计存在待人工决定事项，G3 必须用 --notes 记录决定理由")
+        if verdict not in {"passed", "human_decision_required"}:
+            raise WorkflowError("独立文章审计结论无效，不能批准 G3")
     if args.decision == "approved" and args.gate == "G4":
         publication_payload = artifact.get("payload", {})
         policy_check = publication_payload.get("policy_check")
@@ -1740,8 +2070,8 @@ def command_approve(args: argparse.Namespace) -> None:
             raise WorkflowError("G4 关联的 content 未通过校验：" + "; ".join(content_errors))
         if content.get("artifact_id") != publication_payload.get("content_artifact_id"):
             raise WorkflowError("publication.content_artifact_id 与本地 content 不一致")
-        if not effective_approval(content, "G3"):
-            raise WorkflowError("G4 前需要关联 content 的当前有效 G3")
+        if not effective_content_approval(content, content_path):
+            raise WorkflowError("G4 前需要关联 content 的当前有效 G3 和匹配的独立文章审计")
         if publication_payload.get("scheduled_at"):
             if inventory.get("status") != "scheduled":
                 raise WorkflowError("定时发布必须关联已排期的内容库存项")
@@ -2093,8 +2423,12 @@ def command_register(args: argparse.Namespace) -> None:
     expected_type, required_gate, next_stage = rule
     if artifact.get("artifact_type") != expected_type:
         raise WorkflowError(f"角色 {args.role} 需要 {expected_type}，实际为 {artifact.get('artifact_type')}")
-    if required_gate and not effective_approval(artifact, required_gate):
-        raise WorkflowError(f"登记 {args.role} 前需要有效 {required_gate}")
+    if required_gate:
+        if expected_type == "content":
+            if not effective_content_approval(artifact, artifact_path):
+                raise WorkflowError("登记 content 前需要当前有效 G3 和匹配的独立文章审计")
+        elif not effective_approval(artifact, required_gate):
+            raise WorkflowError(f"登记 {args.role} 前需要有效 {required_gate}")
     if expected_type == "publication" and artifact.get("status") != "published":
         raise WorkflowError("publication 只有 published 后才能登记为完成")
     if expected_type == "inventory_item" and artifact.get("status") not in {"ready", "scheduled"}:
@@ -2224,6 +2558,7 @@ def human_value(value: Any) -> str:
         "topic_report_": "选题报告记录",
         "topic_": "选题记录",
         "content_": "内容记录",
+        "article_audit_": "独立审计记录",
         "inventory_": "库存记录",
         "publication_": "发布记录",
         "metrics_": "数据快照记录",
@@ -2307,11 +2642,11 @@ def render_human_value(value: Any, field: str | None = None, depth: int = 0) -> 
 
 
 def status_tone(value: Any) -> str:
-    if value in {"approved", "ready", "published", "completed", "allowed", "available", "validated", "supported"}:
+    if value in {"approved", "ready", "published", "completed", "allowed", "available", "validated", "supported", "passed", "resolved"}:
         return "positive"
-    if value in {"rejected", "failed", "blocked", "prohibited", "refuted"}:
+    if value in {"rejected", "failed", "blocked", "prohibited", "refuted", "audit_failed", "P0"}:
         return "negative"
-    if value in {"review_required", "unknown", "held", "needs_human", "pending", "inconclusive"}:
+    if value in {"review_required", "unknown", "held", "needs_human", "pending", "inconclusive", "human_decision_required", "P1"}:
         return "warning"
     return "neutral"
 
@@ -2334,26 +2669,40 @@ def decision_guidance(artifact_type: str) -> str:
         "account_strategy": "请确认账号阶段、内容目标、发布节奏、库存和复盘规则是否符合实际运营意图。",
         "persona": "请确认账号身份、目标受众、差异化、表达边界，以及试运营验证计划是否可以执行。",
         "topic_report": "请从候选中明确选择要进入创作的选题，并确认当前证据与局限可以接受。",
-        "content": "请确认标题、正文、图片或视频、事实表述、个人经历和素材权利，修改后需要重新定稿。",
+        "content": "请先查看独立文章审计的结论与未解决问题，再确认标题、正文、图片或视频、事实表述、个人经历和素材权利。任何内容修改都会使旧审计与定稿确认失效。",
+        "article_audit": "本页是独立审计结果，不代替内容负责人的定稿决定。请根据问题等级修订稿件或记录人工取舍。",
         "publication": "请核对目标账号、最终内容、素材顺序、可见范围，以及立即或定时发布安排。定时发布还需确认时区、最晚允许执行时间和执行方式；本次确认只授权一次发布或排期尝试。",
         "metrics_snapshot": "请核对实际上线时间、观察周期、应采集时间与实际采集时间是否一致，再判断本次数据是否可以进入复盘。",
         "experiment": "请确认本轮只调整一个主要因素，并接受观察时间、判断指标和停止条件。",
     }.get(artifact_type, "请审阅本页信息，并明确选择确认通过、退回修改或暂停处理。")
 
 
-def decision_panel(artifact: dict[str, Any]) -> str:
+def decision_panel(
+    artifact: dict[str, Any],
+    *,
+    content_approval_effective: bool | None = None,
+    article_audit_error: str | None = None,
+) -> str:
     artifact_type = artifact.get("artifact_type", "")
     gate = review_gate(artifact)
-    if gate and effective_approval(artifact, gate):
+    gate_is_effective = effective_approval(artifact, gate) if gate else False
+    if artifact_type == "content" and content_approval_effective is not None:
+        gate_is_effective = content_approval_effective
+    if gate and gate_is_effective:
         state = "当前版本已由内容负责人确认"
         detail = "如内容发生修改，原确认会自动失效，需要重新审阅。"
         tone = "positive"
     elif gate:
         approvals = [item for item in artifact.get("approvals", []) if item.get("gate") == gate]
         last = approvals[-1].get("decision") if approvals else None
-        state = human_value(last) if last else "等待内容负责人决定"
-        detail = decision_guidance(artifact_type)
-        tone = status_tone(last or "review_required")
+        if artifact_type == "content" and last == "approved" and content_approval_effective is False:
+            state = "旧的定稿确认已失效"
+            detail = article_audit_error or "稿件或独立审计已发生变化，需要重新审计并确认。"
+            tone = "warning"
+        else:
+            state = human_value(last) if last else "等待内容负责人决定"
+            detail = decision_guidance(artifact_type)
+            tone = status_tone(last or "review_required")
     else:
         state = "本页用于查看进度与证据"
         detail = "如需推进高影响操作，系统会在对应步骤单独请求人工确认。"
@@ -2427,6 +2776,60 @@ def approvals_html(artifact: dict[str, Any]) -> str:
     return '<section class="report-section"><h2>人工决定记录</h2><div class="timeline">' + "".join(items) + "</div></section>"
 
 
+def linked_article_audit_html(
+    audit: dict[str, Any] | None,
+    error: str | None,
+) -> str:
+    if audit is None:
+        message = error or "尚未完成独立文章审计，不能进入内容定稿。"
+        return (
+            '<section class="report-section audit-callout warning">'
+            '<h2>独立文章审计</h2>'
+            f'<div class="pill warning">需要处理</div><p>{html.escape(message)}</p>'
+            '</section>'
+        )
+
+    payload = audit.get("payload", {})
+    summary = payload.get("summary", {}) if isinstance(payload.get("summary"), dict) else {}
+    verdict = summary.get("verdict")
+    findings = payload.get("findings", []) if isinstance(payload.get("findings"), list) else []
+    open_findings = [
+        item for item in findings
+        if isinstance(item, dict) and item.get("status") == "open"
+    ]
+    finding_cards = []
+    for finding in open_findings:
+        severity = finding.get("severity")
+        finding_cards.append(
+            '<article class="audit-finding">'
+            f'<div class="pill {status_tone(severity)}">{html.escape(human_value(severity))}</div>'
+            f'<h3>{html.escape(str(finding.get("issue") or "未填写问题说明"))}</h3>'
+            f'<p><strong>位置：</strong>{html.escape(str(finding.get("locator") or human_value(finding.get("surface_path"))))}</p>'
+            f'<p><strong>修订方向：</strong>{html.escape(str(finding.get("recommendation") or "未填写"))}</p>'
+            '</article>'
+        )
+    findings_html = (
+        '<div class="audit-findings">' + "".join(finding_cards) + '</div>'
+        if finding_cards
+        else '<p class="muted">没有尚未解决的审计问题。</p>'
+    )
+    risk = payload.get("risk", {}) if isinstance(payload.get("risk"), dict) else {}
+    counts = summary.get("counts", {}) if isinstance(summary.get("counts"), dict) else {}
+    count_text = "、".join(
+        f'{human_value(level)} {counts.get(level, 0)} 项' for level in ("P0", "P1", "P2")
+    )
+    return (
+        '<section class="report-section audit-callout">'
+        '<h2>独立文章审计</h2>'
+        f'<div class="audit-summary"><div class="pill {status_tone(verdict)}">{html.escape(human_value(verdict))}</div>'
+        f'<span>内容风险：{html.escape(human_value(risk.get("level")))}</span>'
+        f'<span>{html.escape(count_text)}</span></div>'
+        f'{findings_html}'
+        '<p class="muted">审计由与写作者不同的 Agent 在全新、只读上下文中完成；结论不代替内容负责人的定稿决定。</p>'
+        '</section>'
+    )
+
+
 def page_style() -> str:
     return """
 :root{color-scheme:light;--ink:#172033;--muted:#6b7280;--line:#e6e8ee;--paper:#fff;--bg:#f3f5f9;--brand:#bf3a55;--brand-soft:#fff0f3;--positive:#17795c;--positive-soft:#eaf8f2;--warning:#9a5b00;--warning-soft:#fff7df;--negative:#b4233d;--negative-soft:#fff0f2}
@@ -2440,6 +2843,7 @@ def page_style() -> str:
 .tag-list{display:flex;flex-wrap:wrap;gap:8px}.tag,.pill{display:inline-flex;align-items:center;padding:5px 10px;border-radius:999px;background:#f1f3f6;font-size:13px}.pill{font-weight:700}.pill.positive{color:var(--positive);background:var(--positive-soft)}.pill.warning{color:var(--warning);background:var(--warning-soft)}.pill.negative{color:var(--negative);background:var(--negative-soft)}.pill.neutral{color:#526077;background:#edf1f7}
 .mini-grid,.source-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;min-width:0}.mini-card,.source-card,.list-card{min-width:0;border:1px solid var(--line);border-radius:16px;background:#fff;padding:15px}.mini-title{font-weight:700;margin-bottom:8px}.mini-body{min-width:0;margin-top:10px;font-size:14px}.item-list{display:grid;gap:12px;min-width:0}.list-card{display:grid;grid-template-columns:30px minmax(0,1fr);gap:10px}.item-number{display:grid;place-items:center;width:26px;height:26px;border-radius:50%;background:var(--brand-soft);color:var(--brand);font-weight:700;font-size:13px}.item-content{min-width:0}.source-card h3{font-size:16px;margin:10px 0 5px}.source-card p{color:var(--muted);font-size:13px;margin:0 0 8px}a{color:#a52643;text-underline-offset:3px}
 .timeline{position:relative}.timeline-item{display:grid;grid-template-columns:20px 1fr;gap:12px;padding-bottom:20px}.timeline-item:last-child{padding-bottom:0}.timeline-dot{width:12px;height:12px;margin-top:7px;border-radius:50%;background:#8290a8;box-shadow:0 0 0 5px #edf1f7}.timeline-dot.positive{background:var(--positive);box-shadow:0 0 0 5px var(--positive-soft)}.timeline-dot.warning{background:#d78a13;box-shadow:0 0 0 5px var(--warning-soft)}.timeline-dot.negative{background:var(--negative);box-shadow:0 0 0 5px var(--negative-soft)}.timeline-title{font-weight:700}.timeline-meta{color:var(--muted);font-size:13px}.timeline-body p{margin:5px 0 0}
+.audit-callout.warning{background:var(--warning-soft);border-color:#f1d795}.audit-summary{display:flex;align-items:center;flex-wrap:wrap;gap:10px 18px;margin-bottom:16px}.audit-findings{display:grid;gap:12px}.audit-finding{padding:16px;border:1px solid var(--line);border-radius:16px;background:#fff}.audit-finding h3{margin:9px 0 5px;font-size:17px}.audit-finding p{margin:4px 0;color:#4b5563}
 details.trace{margin-top:18px;padding:16px 20px;border:1px dashed #cfd5df;border-radius:16px;color:var(--muted);background:rgba(255,255,255,.64)}details.trace summary{cursor:pointer;font-weight:700;color:#526077}.trace-grid{display:grid;grid-template-columns:180px 1fr;gap:7px 14px;margin-top:14px;font-size:13px;overflow-wrap:anywhere}.footer{margin-top:20px;text-align:center;color:var(--muted);font-size:13px}
 @media(max-width:760px){.shell{width:min(100% - 20px,1120px);margin-top:10px}.hero,.report-section{padding:21px}.summary-grid{grid-template-columns:repeat(2,1fr)}.decision-panel{align-items:flex-start;flex-direction:column}.decision-name{min-width:0}.detail-row{grid-template-columns:1fr;gap:4px}.mini-grid,.source-grid{grid-template-columns:1fr}.trace-grid{grid-template-columns:1fr}}
 """
@@ -2447,13 +2851,36 @@ details.trace{margin-top:18px;padding:16px 20px;border:1px dashed #cfd5df;border
 
 def trace_details(artifact: dict[str, Any]) -> str:
     fingerprint = payload_hash(artifact)[:16] + "…"
-    values = (
+    values = [
         ("账号内部标识", artifact.get("account_id")),
         ("记录编号", artifact.get("artifact_id")),
         ("本轮任务编号", artifact.get("run_id")),
         ("数据结构版本", artifact.get("schema_version")),
         ("内容校验指纹", fingerprint),
-    )
+    ]
+    payload = artifact.get("payload", {})
+    if artifact.get("artifact_type") == "content" and isinstance(payload.get("article_audit_ref"), dict):
+        audit_ref = payload["article_audit_ref"]
+        values.extend([
+            ("独立审计记录", audit_ref.get("artifact_id")),
+            ("独立审计位置", audit_ref.get("artifact_path")),
+            ("独立审计指纹", audit_ref.get("payload_sha256")),
+            ("被审稿件指纹", audit_ref.get("content_sha256")),
+        ])
+    if artifact.get("artifact_type") == "article_audit":
+        author = payload.get("author", {}) if isinstance(payload.get("author"), dict) else {}
+        reviewer = payload.get("reviewer", {}) if isinstance(payload.get("reviewer"), dict) else {}
+        values.extend([
+            ("被审稿件", payload.get("content_artifact_id")),
+            ("被审稿件版本", payload.get("content_revision")),
+            ("被审稿件位置", payload.get("target_uri")),
+            ("被审稿件指纹", payload.get("content_sha256")),
+            ("写作者记录", author.get("actor_id")),
+            ("写作上下文", author.get("context_id")),
+            ("独立审计者记录", reviewer.get("actor_id")),
+            ("审计上下文", reviewer.get("context_id")),
+            ("审计模型记录", reviewer.get("model_id")),
+        ])
     rows = "".join(
         f'<div>{html.escape(label)}</div><div>{html.escape(str(value) if value is not None else "未填写")}</div>'
         for label, value in values
@@ -2461,7 +2888,14 @@ def trace_details(artifact: dict[str, Any]) -> str:
     return f'<details class="trace"><summary>查看追溯信息</summary><div class="trace-grid">{rows}</div></details>'
 
 
-def html_render(artifact: dict[str, Any], account_display_name: str | None = None) -> str:
+def html_render(
+    artifact: dict[str, Any],
+    account_display_name: str | None = None,
+    *,
+    linked_article_audit: dict[str, Any] | None = None,
+    article_audit_error: str | None = None,
+    content_approval_effective: bool | None = None,
+) -> str:
     artifact_type = artifact.get("artifact_type", "")
     title = ARTIFACT_LABELS.get(artifact_type, "运营审阅页")
     status = artifact.get("status")
@@ -2484,7 +2918,8 @@ def html_render(artifact: dict[str, Any], account_display_name: str | None = Non
 <body><main class="shell"><header class="hero"><div class="eyebrow">小红书运营工作流 · 人工审阅</div>
 <h1>{html.escape(title)}</h1><p>页面已把内部记录转换为业务语言，供内容负责人判断；页面不展示机器原始数据。</p>
 <div class="summary-grid">{summary_html}</div></header>
-{decision_panel(artifact)}
+{decision_panel(artifact, content_approval_effective=content_approval_effective, article_audit_error=article_audit_error)}
+{linked_article_audit_html(linked_article_audit, article_audit_error) if artifact_type == "content" else ""}
 {payload_sections_html(artifact)}
 {provenance_html(artifact)}
 {approvals_html(artifact)}
@@ -2594,9 +3029,27 @@ def command_render(args: argparse.Namespace) -> None:
         account_display_name = account.get("display_name")
     except WorkflowError:
         pass
+    linked_audit: dict[str, Any] | None = None
+    audit_error: str | None = None
+    content_approval_effective: bool | None = None
+    if artifact.get("artifact_type") == "content":
+        try:
+            linked_audit, _ = load_linked_article_audit(artifact, path)
+        except WorkflowError as exc:
+            audit_error = str(exc)
+        content_approval_effective = effective_content_approval(artifact, path)
     output = Path(args.output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(html_render(artifact, account_display_name), encoding="utf-8")
+    output.write_text(
+        html_render(
+            artifact,
+            account_display_name,
+            linked_article_audit=linked_audit,
+            article_audit_error=audit_error,
+            content_approval_effective=content_approval_effective,
+        ),
+        encoding="utf-8",
+    )
     print(output)
 
 
@@ -2653,6 +3106,15 @@ def build_parser() -> argparse.ArgumentParser:
     validate_workspace = sub.add_parser("validate-workspace", help="校验整个工作区")
     validate_workspace.add_argument("--root", required=True)
     validate_workspace.set_defaults(func=command_validate_workspace)
+
+    link_article_audit = sub.add_parser(
+        "link-article-audit", help="把独立文章审计绑定到冻结 content"
+    )
+    link_article_audit.add_argument("--content", required=True)
+    link_article_audit.add_argument("--audit", required=True)
+    link_article_audit.add_argument("--actor", required=True)
+    link_article_audit.add_argument("--actor-type", choices=["human", "agent"], default="agent")
+    link_article_audit.set_defaults(func=command_link_article_audit)
 
     approve = sub.add_parser("approve", help="记录人工门禁决定")
     approve.add_argument("path")
