@@ -14,8 +14,9 @@ from typing import Any
 
 
 GENERIC_SCHEMA_VERSION = "article-audit/1.0.0"
-XHS_WORKFLOW_SCHEMA_VERSION = "2.2.0"
-ACCEPTED_SCHEMA_VERSIONS = {GENERIC_SCHEMA_VERSION, XHS_WORKFLOW_SCHEMA_VERSION}
+XHS_WORKFLOW_SCHEMA_VERSION = "2.4.0"
+XHS_WORKFLOW_SCHEMA_VERSIONS = {"2.2.0", "2.3.0", XHS_WORKFLOW_SCHEMA_VERSION}
+ACCEPTED_SCHEMA_VERSIONS = {GENERIC_SCHEMA_VERSION} | XHS_WORKFLOW_SCHEMA_VERSIONS
 CONTRACT_VERSION = "1.0.0"
 SHA_RE = re.compile(r"^[a-f0-9]{64}$")
 CORE_DIMENSIONS = {
@@ -178,8 +179,8 @@ def validate_audit_document(
         errors.append("缺少顶层字段：" + ", ".join(missing_top))
     if audit.get("schema_version") not in ACCEPTED_SCHEMA_VERSIONS:
         errors.append(
-            "schema_version 必须是 "
-            f"{GENERIC_SCHEMA_VERSION} 或 {XHS_WORKFLOW_SCHEMA_VERSION}"
+            "schema_version 必须是受支持版本："
+            + ", ".join(sorted(ACCEPTED_SCHEMA_VERSIONS))
         )
     if audit.get("artifact_type") != "article_audit":
         errors.append("artifact_type 必须是 article_audit")
@@ -493,10 +494,14 @@ def validate_audit_document(
     if content is not None:
         if content.get("artifact_type") != "content":
             errors.append("--content 必须指向 content artifact")
-        if audit.get("schema_version") != XHS_WORKFLOW_SCHEMA_VERSION:
+        content_schema_version = content.get("schema_version")
+        if content_schema_version not in XHS_WORKFLOW_SCHEMA_VERSIONS:
             errors.append(
-                f"接入 xhs content 时 schema_version 必须是 {XHS_WORKFLOW_SCHEMA_VERSION}"
+                "xhs content 的 schema_version 必须是受支持版本："
+                + ", ".join(sorted(XHS_WORKFLOW_SCHEMA_VERSIONS))
             )
+        if audit.get("schema_version") != content_schema_version:
+            errors.append("audit 与 content 的 schema_version 必须一致")
         content_payload = require_object(content.get("payload"), "content.payload", errors)
         if audit.get("account_id") != content.get("account_id"):
             errors.append("audit 与 content 的 account_id 不一致")

@@ -1,0 +1,206 @@
+{
+  "schema_version": "2.4.0",
+  "artifact_type": "persona",
+  "artifact_id": "persona_readme_v250",
+  "account_id": "readme_demo",
+  "run_id": "run_readme_v250",
+  "created_at": "2026-08-25T18:05:00+08:00",
+  "updated_at": "2026-08-25T18:05:00+08:00",
+  "status": "review_required",
+  "provenance": [
+    {
+      "source_id": "source_owner",
+      "kind": "user_input",
+      "captured_at": "2026-08-25T18:00:00+08:00",
+      "summary": "README 演示使用的虚构账号负责人输入",
+      "limitations": [
+        "仅用于验证工作流结构与界面，不代表真实账号结论或运营效果"
+      ]
+    }
+  ],
+  "approvals": [],
+  "payload": {
+    "revision": 1,
+    "supersedes_artifact_id": null,
+    "strategy_artifact_id": "account_strategy_readme_v250",
+    "mode": "assumed",
+    "positioning_diagnosis": {
+      "diagnosis_type": "initial_definition",
+      "rationale": "该账号首次建立可验证定位，尚无足够样本支持稳定定位",
+      "evidence_refs": [
+        "source_owner"
+      ],
+      "alternative_explanations": [
+        "受众需求可能比当前设想更细分"
+      ],
+      "recommended_action": "create"
+    },
+    "direction_alignment": {
+      "account_role": "承载独立创作者工作流教育与信任建立",
+      "account_current_value": "用可复现步骤解决当下的执行问题",
+      "account_future_value": "逐步培养独立迭代工作流的判断力",
+      "relationship_expression": "以同行教练语气展示方法、证据和边界",
+      "trust_expression": "每篇至少呈现一个可核对步骤、来源或失败条件",
+      "content_engine_expression": "用问题、方法、实验和复盘循环生产内容",
+      "memory_asset_expression": "稳定重复可验证工作流这一主记忆资产",
+      "business_connection": "通过教育内容验证咨询与训练服务的真实需求",
+      "tensions": [
+        "信息密度与小红书阅读门槛需要平衡"
+      ],
+      "evidence_refs": [
+        "source_owner"
+      ]
+    },
+    "positioning_state": {
+      "phase": "exploration",
+      "scope": "小红书独立创作者工作流教育内容的当前试运营周期",
+      "stable_core": [
+        "只使用真实经历与可核对证据",
+        "提供方法和边界，不制造依赖"
+      ],
+      "open_questions": [
+        "目标受众是否会持续把可复现步骤视为核心价值",
+        "哪一种内容形式最容易形成可验证工作流的记忆"
+      ],
+      "anti_audience": [
+        "只寻找无法验证的流量捷径者"
+      ],
+      "anti_positioning": [
+        "万能工具清单账号",
+        "承诺无人值守结果的自动化账号"
+      ],
+      "review_by": null
+    },
+    "validation_evidence": {
+      "review_artifact_refs": [],
+      "experiment_artifact_refs": [],
+      "content_artifact_refs": [],
+      "snapshot_artifact_refs": [],
+      "evidence_streams_covered": [],
+      "counter_evidence_reviewed": false,
+      "reviewed_at": null,
+      "limitations": [
+        "尚无正式发布后的复盘证据"
+      ]
+    },
+    "hypotheses": [
+      {
+        "hypothesis_id": "persona_h1",
+        "component": "value",
+        "statement": "独立创作者需要能够复现的工作流步骤，而不只是工具清单",
+        "observable_implication": "内容获得有效曝光且完整兑现时，目标受众会收藏并复述可复现这一价值",
+        "falsification_signal": "多次有效曝光和完整兑现后，目标受众仍只对工具清单产生持续反应",
+        "status": "testing",
+        "confidence": "low",
+        "scope": "小红书独立创作者工作流教育内容的当前试运营周期",
+        "evidence_refs": [
+          "source_owner"
+        ],
+        "counter_evidence_refs": [],
+        "review_by": null
+      }
+    ],
+    "validation_plan": {
+      "sample_target": 12,
+      "diversity_dimensions": [
+        "内容目标",
+        "问题复杂度",
+        "图文与纯文字形式"
+      ],
+      "success_signals": [
+        "信任指标持续改善",
+        "评论能够复述账号提供的核心价值"
+      ],
+      "stop_conditions": [
+        "连续样本反驳核心受众假设",
+        "内容只能依赖不可复现的个人经历"
+      ]
+    },
+    "identity": {
+      "display_name": "示例工作流教练",
+      "positioning_statement": "帮助独立创作者用证据验证和迭代工作流"
+    },
+    "niche": {
+      "primary": "创作者工作流",
+      "subtopics": [
+        "Agent 协作",
+        "内容验证",
+        "运营复盘"
+      ],
+      "formats": [
+        "image",
+        "text"
+      ]
+    },
+    "audience": [
+      {
+        "segment_id": "audience_1",
+        "name": "正在建立个人内容系统的独立创作者",
+        "jobs": [
+          "建立能够稳定执行和复盘的内容工作流"
+        ],
+        "pains": [
+          "知道很多工具，但无法连接成可靠流程",
+          "内容表现波动时不知道应该改方向还是改执行"
+        ],
+        "desired_outcomes": [
+          "以更低试错成本完成从定位到复盘的闭环"
+        ],
+        "evidence_refs": [
+          "source_owner"
+        ]
+      }
+    ],
+    "differentiation": {
+      "value_proposition": "用可核验的步骤、失败条件和复盘记录代替工具堆砌",
+      "proof": [],
+      "non_goals": [
+        "不承诺无人值守运营",
+        "不把单次爆款当成定位验证"
+      ]
+    },
+    "content_pillars": [
+      {
+        "pillar_id": "pillar_1",
+        "name": "工作流验证",
+        "purpose": "为常见执行问题提供可复现验证方法",
+        "audience_segment_refs": [
+          "audience_1"
+        ],
+        "audience_job": "建立能够稳定执行和复盘的内容工作流",
+        "value_delivered": "可复现的验证步骤、检查清单和失败边界",
+        "proof_role": "用真实验证过程与限制条件建立信任",
+        "memory_asset": "可验证工作流",
+        "business_connection": "验证读者对系统方法和后续服务的需求",
+        "hypothesis_refs": [
+          "persona_h1"
+        ],
+        "boundaries": [
+          "不把单次结果写成普遍结论",
+          "不伪造亲测数据"
+        ],
+        "topic_seeds": [
+          "如何为一条内容工作流设计最小验证",
+          "内容数据变差时先检查定位还是执行"
+        ]
+      }
+    ],
+    "voice": {
+      "traits": [
+        "清晰",
+        "克制",
+        "证据优先"
+      ]
+    },
+    "visual": {
+      "principles": [
+        "结构优先",
+        "关键结论可扫读"
+      ]
+    },
+    "boundaries": [
+      "不伪造经历、评论或指标",
+      "不以单次内容结果静默修改创作者方向"
+    ]
+  }
+}

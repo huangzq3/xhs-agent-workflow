@@ -1,6 +1,6 @@
 # 原生生图交接
 
-图片生成由当前 Agent 已展示的原生生图能力执行。本 Skill 只管理 JSON 任务、人工授权、本地产物验证和溯源，不配置密钥、端点、SDK 或网络请求。
+图片生成只由当前 AI Agent 已展示的原生生图能力执行。本 Skill 只管理 JSON 任务、人工授权、Agent 结果引用、本地文件登记和溯源，不配置密钥、端点、SDK 或网络请求，也不包含本地栅格生成或编辑实现。
 
 ## 路由规则
 
@@ -9,7 +9,7 @@
 3. 确认 `processing_boundary`。边界是 `unknown` 时停止并请内容负责人核对；不把“Agent 原生”当作“本地私有”。
 4. Codex 运行时若显式提供 `imagegen` 或等价原生能力，按该能力的 Skill/工具规则调用；其他 Agent 调用各自已展示的原生生图能力。
 5. 不能仅根据 Agent 名称猜测工具是否存在。
-6. 原生生图不可用时，使用本地文字卡、交付 prompt 与布局规格，或保留未执行任务。
+6. 原生生图不可用时，交付 prompt 与布局规格、保留未执行任务或建立人工素材任务；不得改用本地文字卡、叠字、拼图、裁剪或其他栅格脚本。
 
 ## 标准流程
 
@@ -62,16 +62,19 @@ python3 scripts/image_job.py mark-generated \
 python3 scripts/image_job.py finalize \
   --job /absolute/path/to/image_job.json \
   --capability-id <advertised-capability-id> \
-  --runtime-name <confirmed-runtime-name>
+  --runtime-name <confirmed-runtime-name> \
+  --result-reference <attachment-or-result-reference>
 ```
 
-`finalize` 只做本地图片完整性、媒体类型、尺寸、比例和 SHA-256 验证，不会呼叫生图服务，也不会静默裁剪。
+如果前一步 `mark-generated` 已经记录相同结果引用，`finalize` 可以省略 `--result-reference`。
+
+`finalize` 只确认文件存在且非空、签名属于支持的图片格式，并登记媒体类型、字节数和 SHA-256。它不解码像素、不核验尺寸或构图、不裁剪，也不会呼叫生图服务。运行 Agent 必须在写入素材台账前实际查看图片，核对内容、文字、比例、构图和 prompt 是否一致；G3 再由内容负责人决定是否定稿。
 
 ### 4. 写入素材台账
 
 只有 `status=completed` 的任务可用于构建 content asset：
 
-- `uri`、`sha256` 和 `media_type` 来自 `image_job.output`；
+- `uri`、`sha256`、`media_type` 和 `size_bytes` 来自 `image_job.output`；
 - `rights_basis=generated`；
 - `generation_job_id=image_job.job_id`；
 - `generator_capability_id=image_job.execution.capability_id`；

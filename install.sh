@@ -132,12 +132,6 @@ else
   echo "可选能力：Python 3.9+ 不可用；改用当前 Agent 的文件能力维护相同机器契约"
 fi
 
-if command -v python3 >/dev/null 2>&1 && python3 -c 'import PIL' 2>/dev/null; then
-  echo "可选能力：Pillow 可用于本地文字卡渲染和图片核对"
-else
-  echo "可选能力：未安装 Pillow，本地文字卡渲染和图片定稿不可用"
-fi
-
 if command -v python3 >/dev/null 2>&1 && python3 -c 'import jsonschema' 2>/dev/null; then
   echo "可选能力：jsonschema 可用"
 else

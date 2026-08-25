@@ -24,7 +24,7 @@ class ArticleAuditContractTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.content = {
-            "schema_version": "2.2.0",
+            "schema_version": "2.3.0",
             "artifact_type": "content",
             "artifact_id": "content_demo001",
             "account_id": "demo_account",
@@ -59,7 +59,7 @@ class ArticleAuditContractTests(unittest.TestCase):
 
     def make_audit(self) -> dict:
         return {
-            "schema_version": "2.2.0",
+            "schema_version": "2.3.0",
             "artifact_type": "article_audit",
             "artifact_id": "article_audit_demo001",
             "account_id": "demo_account",
@@ -129,6 +129,18 @@ class ArticleAuditContractTests(unittest.TestCase):
     def test_valid_independent_audit_passes(self) -> None:
         audit = self.make_audit()
         self.assertEqual(audit_cli.validate_audit_document(audit, content=self.content), [])
+
+    def test_legacy_xhs_envelope_remains_supported_when_versions_match(self) -> None:
+        content = copy.deepcopy(self.content)
+        content["schema_version"] = "2.2.0"
+        audit = self.make_audit()
+        audit["schema_version"] = "2.2.0"
+        audit["payload"]["content_sha256"] = audit_cli.auditable_content_hash(content)
+        self.assertEqual(audit_cli.validate_audit_document(audit, content=content), [])
+
+        audit["schema_version"] = "2.3.0"
+        errors = audit_cli.validate_audit_document(audit, content=content)
+        self.assertTrue(any("schema_version 必须一致" in error for error in errors))
 
     def test_content_hash_ignores_only_audit_link(self) -> None:
         baseline = audit_cli.auditable_content_hash(self.content)

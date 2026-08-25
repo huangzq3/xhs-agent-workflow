@@ -20,7 +20,8 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
+SUPPORTED_SCHEMA_VERSIONS = {"1.0.0", SCHEMA_VERSION}
 ASPECT_RE = re.compile(r"^([1-9][0-9]*):([1-9][0-9]*)$")
 STATUSES = {"pending", "generated_pending_export", "completed", "failed"}
 
@@ -84,8 +85,10 @@ def validate_job(job: dict[str, Any]) -> list[str]:
     missing = sorted(required - set(job))
     if missing:
         errors.append("缺少顶层字段：" + ", ".join(missing))
-    if job.get("schema_version") != SCHEMA_VERSION:
-        errors.append(f"schema_version 必须是 {SCHEMA_VERSION}")
+    if job.get("schema_version") not in SUPPORTED_SCHEMA_VERSIONS:
+        errors.append(
+            "schema_version 必须是 " + " 或 ".join(sorted(SUPPORTED_SCHEMA_VERSIONS))
+        )
     if not isinstance(job.get("job_id"), str) or not job.get("job_id", "").startswith("image_job_"):
         errors.append("job_id 无效")
     if job.get("status") not in STATUSES:
@@ -144,10 +147,36 @@ def validate_job(job: dict[str, Any]) -> list[str]:
         execution = {}
     if job.get("status") in {"generated_pending_export", "completed", "failed"} and not execution.get("capability_id"):
         errors.append("已执行任务必须记录 capability_id")
-    if job.get("status") == "completed" and not isinstance(job.get("output"), dict):
+    output = job.get("output")
+    if job.get("status") == "completed" and not isinstance(output, dict):
         errors.append("completed 任务必须包含 output")
     if job.get("status") != "completed" and job.get("output") is not None:
         errors.append("未完成任务的 output 必须为 null")
+    if job.get("status") == "completed" and isinstance(output, dict):
+        if not isinstance(output.get("uri"), str) or not output.get("uri"):
+            errors.append("output.uri 不能为空")
+        if not isinstance(output.get("sha256"), str) or not re.fullmatch(
+            r"[a-f0-9]{64}", output.get("sha256", "")
+        ):
+            errors.append("output.sha256 无效")
+        if not isinstance(output.get("media_type"), str) or not output.get(
+            "media_type", ""
+        ).startswith("image/"):
+            errors.append("output.media_type 必须是 image/*")
+        if job.get("schema_version") == "1.0.0":
+            if not isinstance(output.get("width"), int) or output.get("width", 0) <= 0:
+                errors.append("1.0.0 output.width 必须是正整数")
+            if not isinstance(output.get("height"), int) or output.get("height", 0) <= 0:
+                errors.append("1.0.0 output.height 必须是正整数")
+            if not isinstance(output.get("aspect_ratio"), str) or not ASPECT_RE.fullmatch(
+                output.get("aspect_ratio", "")
+            ):
+                errors.append("1.0.0 output.aspect_ratio 无效")
+        else:
+            if not isinstance(output.get("size_bytes"), int) or output.get("size_bytes", 0) <= 0:
+                errors.append("1.1.0 output.size_bytes 必须是正整数")
+            if not execution.get("result_reference"):
+                errors.append("1.1.0 completed 任务必须记录 Agent 原生生图结果引用")
     if job.get("status") == "failed" and not execution.get("error"):
         errors.append("failed 任务必须记录 error")
     return errors
@@ -240,23 +269,26 @@ def command_mark_generated(args: argparse.Namespace) -> None:
     print(path)
 
 
-def inspect_image(path: Path) -> tuple[int, int, str]:
-    try:
-        from PIL import Image
-    except ImportError as exc:
-        raise ImageJobError("验证生成图需要 Pillow；未验证前不能进入素材台账") from exc
-    try:
-        with Image.open(path) as image:
-            image.verify()
-        with Image.open(path) as image:
-            width, height = image.size
-            image_format = image.format
-    except Exception as exc:
-        raise ImageJobError(f"生成结果不是可验证图片：{path}") from exc
-    media_type = Image.MIME.get(image_format) or mimetypes.guess_type(path.name)[0]
-    if not media_type or not media_type.startswith("image/"):
-        raise ImageJobError(f"无法确认图片媒体类型：{path}")
-    return width, height, media_type
+def detect_image_media_type(path: Path) -> str:
+    """Identify common Agent image outputs by signature without decoding pixels."""
+    with path.open("rb") as handle:
+        header = handle.read(16)
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if header.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if header.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return "image/webp"
+    if header.startswith(b"BM"):
+        return "image/bmp"
+    guessed = mimetypes.guess_type(path.name)[0]
+    if guessed and guessed.startswith("image/"):
+        raise ImageJobError(
+            f"文件扩展名看似图片，但签名无法确认：{path}；请重新导出 Agent 生成结果"
+        )
+    raise ImageJobError(f"Agent 生成结果不是受支持的图片文件：{path}")
 
 
 def command_finalize(args: argparse.Namespace) -> None:
@@ -271,15 +303,13 @@ def command_finalize(args: argparse.Namespace) -> None:
     if not capability_id:
         raise ImageJobError("完成任务前必须记录实际 capability_id")
 
-    width, height, media_type = inspect_image(output_path)
-    width_ratio, height_ratio = (int(item) for item in job["request"]["aspect_ratio"].split(":"))
-    expected = width_ratio / height_ratio
-    actual = width / height
-    if abs(actual - expected) / expected > args.aspect_tolerance:
-        raise ImageJobError(
-            f"图片比例 {width}:{height} 与请求 {job['request']['aspect_ratio']} 不符；"
-            "请明确重排或裁剪后再完成"
-        )
+    size_bytes = output_path.stat().st_size
+    if size_bytes <= 0:
+        raise ImageJobError(f"Agent 生成结果为空文件：{output_path}")
+    media_type = detect_image_media_type(output_path)
+    result_reference = args.result_reference or job["execution"].get("result_reference")
+    if not result_reference:
+        raise ImageJobError("完成任务前必须记录 AI Agent 原生生图结果引用")
 
     timestamp = now_iso()
     job["status"] = "completed"
@@ -290,6 +320,7 @@ def command_finalize(args: argparse.Namespace) -> None:
             "capability_id": capability_id,
             "started_at": job["execution"].get("started_at") or timestamp,
             "completed_at": timestamp,
+            "result_reference": result_reference,
             "error": None,
         }
     )
@@ -297,9 +328,7 @@ def command_finalize(args: argparse.Namespace) -> None:
         "uri": str(output_path.resolve()),
         "sha256": sha256_file(output_path),
         "media_type": media_type,
-        "width": width,
-        "height": height,
-        "aspect_ratio": job["request"]["aspect_ratio"],
+        "size_bytes": size_bytes,
     }
     errors = validate_job(job)
     if errors:
@@ -362,11 +391,11 @@ def build_parser() -> argparse.ArgumentParser:
     mark.add_argument("--result-reference", required=True)
     mark.set_defaults(func=command_mark_generated)
 
-    finalize = subparsers.add_parser("finalize", help="验证本地图片并完成任务")
+    finalize = subparsers.add_parser("finalize", help="登记 Agent 导出的图片文件并完成任务")
     finalize.add_argument("--job", required=True)
     finalize.add_argument("--capability-id")
     finalize.add_argument("--runtime-name")
-    finalize.add_argument("--aspect-tolerance", type=float, default=0.02)
+    finalize.add_argument("--result-reference")
     finalize.set_defaults(func=command_finalize)
 
     fail = subparsers.add_parser("fail", help="记录原生生图失败")

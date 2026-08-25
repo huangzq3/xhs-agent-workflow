@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 from datetime import datetime, timedelta
@@ -68,6 +69,26 @@ def command_new_strategy(args: argparse.Namespace) -> None:
     timestamp = core.now_iso()
     strategy_id = core.new_id("account_strategy")
     old_payload = supersedes.get("payload", {}) if supersedes else {}
+    old_direction = old_payload.get("creator_direction")
+    creator_direction = copy.deepcopy(old_direction) if isinstance(old_direction, dict) else {
+        "primary_90_day_outcome": None,
+        "business_destination": None,
+        "audience_business_fit": None,
+        "current_value": None,
+        "future_value": None,
+        "relationship_posture": None,
+        "trust_engine": None,
+        "content_engine": None,
+        "memory_assets": {
+            "primary": None,
+            "supporting": [],
+            "evidence_refs": [],
+        },
+        "red_lines": [],
+        "evidence_refs": [],
+        "assumptions": [],
+        "unknowns": [],
+    }
     artifact = {
         "schema_version": core.SCHEMA_VERSION,
         "artifact_type": "account_strategy",
@@ -89,6 +110,7 @@ def command_new_strategy(args: argparse.Namespace) -> None:
         "payload": {
             "revision": int(old_payload.get("revision", 0)) + 1,
             "supersedes_artifact_id": supersedes.get("artifact_id") if supersedes else None,
+            "creator_direction": creator_direction,
             "lifecycle_stage": args.lifecycle_stage,
             "stage_confidence": args.stage_confidence,
             "persona_mode": args.persona_mode,

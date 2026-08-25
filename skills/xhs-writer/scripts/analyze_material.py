@@ -68,21 +68,6 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def image_info(path: Path) -> dict:
-    try:
-        from PIL import Image
-    except ImportError:
-        return {"metadata_error": "Pillow not installed"}
-    try:
-        with Image.open(path) as image:
-            width, height = image.size
-            if width <= 0 or height <= 0:
-                return {"metadata_error": "invalid dimensions"}
-            return {"width": width, "height": height, "aspect": round(width / height, 4)}
-    except Exception as exc:
-        return {"metadata_error": str(exc)}
-
-
 def video_info(path: Path) -> dict:
     if not shutil.which("ffprobe"):
         return {"metadata_error": "ffprobe not installed"}
@@ -193,7 +178,7 @@ def main() -> int:
             "intended_usage": "",
         }
         if kind == "image":
-            item.update(image_info(path))
+            item["visual_review_status"] = "pending_agent_review"
         elif kind == "video":
             item.update(video_info(path))
             if frames_dir:

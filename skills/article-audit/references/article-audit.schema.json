@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "artifact_type", "artifact_id", "account_id", "run_id", "created_at", "updated_at", "status", "provenance", "approvals", "payload"],
   "properties": {
-    "schema_version": {"enum": ["article-audit/1.0.0", "2.2.0"]},
+    "schema_version": {"enum": ["article-audit/1.0.0", "2.2.0", "2.3.0", "2.4.0"]},
     "artifact_type": {"const": "article_audit"},
     "artifact_id": {"type": "string", "pattern": "^article_audit_[a-z0-9_-]{6,127}$"},
     "account_id": {"oneOf": [{"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{1,63}$"}, {"type": "null"}]},

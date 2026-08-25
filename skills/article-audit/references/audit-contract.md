@@ -2,7 +2,7 @@
 
 权威机器约束见 [article-audit.schema.json](article-audit.schema.json)，确定性校验见 `../scripts/article_audit_cli.py`。
 
-通用独立审计使用顶层 `schema_version=article-audit/1.0.0`，`account_id` 和 `run_id` 可为 null。接入 xhs-workflow 时使用其 artifact 信封：`schema_version=2.2.0`，并填写实际账号和任务标识。两种信封共用 `payload.contract_version=1.0.0` 和完全相同的审计语义。
+通用独立审计使用顶层 `schema_version=article-audit/1.0.0`，`account_id` 和 `run_id` 可为 null。接入 xhs-workflow 时使用与被审 `content` 相同的 artifact 信封版本；当前新产物使用 `schema_version=2.4.0`，历史 `2.2.0` 与 `2.3.0` 产物仍可校验。两种接入方式共用 `payload.contract_version=1.0.0` 和完全相同的审计语义。
 
 ## 目标绑定
 

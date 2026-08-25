@@ -16,7 +16,7 @@
     "output"
   ],
   "properties": {
-    "schema_version": {"const": "1.0.0"},
+    "schema_version": {"enum": ["1.0.0", "1.1.0"]},
     "job_id": {"type": "string", "pattern": "^image_job_[a-z0-9_-]{6,127}$"},
     "created_at": {"type": "string", "format": "date-time"},
     "updated_at": {"type": "string", "format": "date-time"},
@@ -73,20 +73,61 @@
     "output": {
       "oneOf": [
         {"type": "null"},
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["uri", "sha256", "media_type", "width", "height", "aspect_ratio"],
-          "properties": {
-            "uri": {"type": "string", "minLength": 1},
-            "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-            "media_type": {"type": "string", "pattern": "^image/"},
-            "width": {"type": "integer", "minimum": 1},
-            "height": {"type": "integer", "minimum": 1},
-            "aspect_ratio": {"type": "string", "pattern": "^[1-9][0-9]*:[1-9][0-9]*$"}
-          }
-        }
+        {"$ref": "#/$defs/outputV10"},
+        {"$ref": "#/$defs/outputV11"}
       ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"schema_version": {"const": "1.0.0"}, "status": {"const": "completed"}},
+        "required": ["schema_version", "status"]
+      },
+      "then": {"properties": {"output": {"$ref": "#/$defs/outputV10"}}}
+    },
+    {
+      "if": {
+        "properties": {"schema_version": {"const": "1.1.0"}, "status": {"const": "completed"}},
+        "required": ["schema_version", "status"]
+      },
+      "then": {
+        "properties": {
+          "execution": {
+            "properties": {
+              "capability_id": {"type": "string", "minLength": 1},
+              "result_reference": {"type": "string", "minLength": 1}
+            }
+          },
+          "output": {"$ref": "#/$defs/outputV11"}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "outputV10": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uri", "sha256", "media_type", "width", "height", "aspect_ratio"],
+      "properties": {
+        "uri": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "media_type": {"type": "string", "pattern": "^image/"},
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "aspect_ratio": {"type": "string", "pattern": "^[1-9][0-9]*:[1-9][0-9]*$"}
+      }
+    },
+    "outputV11": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uri", "sha256", "media_type", "size_bytes"],
+      "properties": {
+        "uri": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "media_type": {"type": "string", "pattern": "^image/"},
+        "size_bytes": {"type": "integer", "minimum": 1}
+      }
     }
   }
 }
