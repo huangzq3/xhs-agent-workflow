@@ -1,0 +1,133 @@
+{
+  "schema_version": "2.4.0",
+  "artifact_type": "account_strategy",
+  "artifact_id": "account_strategy_readme_v250",
+  "account_id": "readme_demo",
+  "run_id": "run_readme_v250",
+  "created_at": "2026-08-25T18:00:00+08:00",
+  "updated_at": "2026-08-25T18:00:00+08:00",
+  "status": "review_required",
+  "provenance": [
+    {
+      "source_id": "source_owner",
+      "kind": "user_input",
+      "captured_at": "2026-08-25T18:00:00+08:00",
+      "summary": "README 演示使用的虚构账号负责人输入",
+      "limitations": [
+        "仅用于验证工作流结构与界面，不代表真实账号结论或运营效果"
+      ]
+    }
+  ],
+  "approvals": [],
+  "payload": {
+    "revision": 1,
+    "supersedes_artifact_id": null,
+    "creator_direction": {
+      "primary_90_day_outcome": "用 12 篇试运营内容验证一条可持续的工作流教育主线",
+      "business_destination": "验证读者对工作流咨询与训练服务的真实需求",
+      "audience_business_fit": "独立创作者的执行问题可以由可复现方法解决，与后续服务能力一致",
+      "current_value": "提供当下就能执行的工作流拆解与检查步骤",
+      "future_value": "帮助读者建立能够独立迭代工作流的判断力",
+      "relationship_posture": "同行教练：给方法、证据和边界，不制造依赖",
+      "trust_engine": "公开验证过程、失败条件、来源和可核对样例",
+      "content_engine": "从真实执行问题中持续提炼方法、测试和复盘",
+      "memory_assets": {
+        "primary": "可验证工作流",
+        "supporting": [
+          "证据先行"
+        ],
+        "evidence_refs": [
+          "source_owner"
+        ]
+      },
+      "red_lines": [
+        "不伪造亲测经历",
+        "不把单次结果包装成普遍规律"
+      ],
+      "evidence_refs": [
+        "source_owner"
+      ],
+      "assumptions": [
+        "目标受众愿意为降低试错成本采用结构化方法"
+      ],
+      "unknowns": [
+        "咨询与训练服务的需求优先级尚未验证"
+      ]
+    },
+    "lifecycle_stage": "trial",
+    "stage_confidence": "medium",
+    "persona_mode": "assumed",
+    "play_mode": "hybrid",
+    "transition": {
+      "from_stage": null,
+      "rationale": "新账号缺少稳定内容与受众基线，从试运营开始",
+      "evidence_refs": [
+        "source_owner"
+      ],
+      "alternative_explanations": [
+        "历史数据尚少，账号阶段判断可能需要调整"
+      ]
+    },
+    "stage_evidence": [
+      {
+        "signal_id": "stage_1",
+        "observation": "尚无稳定内容基线和可复用的受众反馈",
+        "evidence_refs": [
+          "source_owner"
+        ],
+        "confidence": "medium"
+      }
+    ],
+    "content_objectives": [
+      {
+        "objective": "acquisition",
+        "target_share": 0.4,
+        "rationale": "验证哪些问题能够形成有效入口",
+        "seed_ref": null
+      },
+      {
+        "objective": "trust",
+        "target_share": 0.4,
+        "rationale": "验证证据化内容能否建立信任",
+        "seed_ref": null
+      },
+      {
+        "objective": "tag_strengthening",
+        "target_share": 0.2,
+        "rationale": "验证可验证工作流这一记忆资产",
+        "seed_ref": null
+      }
+    ],
+    "publishing_policy": {
+      "modification_policy": "human_review_required",
+      "deletion_policy": "human_review_required",
+      "minimum_observation_hours": 24,
+      "same_topic_cooldown_hours": 72,
+      "breakout_hold_hours": null,
+      "threshold_basis": "manual",
+      "exceptions_require_human": true
+    },
+    "inventory_policy": {
+      "target_coverage_days": 7,
+      "target_ready_items": 3,
+      "threshold_basis": "manual"
+    },
+    "measurement_policy": {
+      "trust_metrics": [
+        "profile_visit_rate",
+        "follow_rate"
+      ],
+      "long_tail_checkpoints_days": [
+        7,
+        30
+      ],
+      "qualitative_rubric_refs": [
+        "rubric/trust-v1"
+      ]
+    },
+    "experience_seed_refs": [],
+    "limitations": [
+      "目标比例和阈值来自虚构示例，正式账号必须用自身基线重新确认"
+    ]
+  }
+}

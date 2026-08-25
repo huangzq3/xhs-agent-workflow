@@ -38,3 +38,5 @@ content.format 设为 text。只保存 title、caption、hashtags 和 claims，�
 - 所有事实主张关联来源或明确标为待确认。
 - 所有素材存在、哈希一致、权利已验证。
 - change_summary 能让内容负责人理解相对上一版的实质变化。
+- `authorship` 记录写作者的角色类型、稳定身份、写作上下文和模型记录；机器作者的上下文不得为空。
+- 作者交付的新修订将 `article_audit_ref` 设为 null；该引用只由 xhs-workflow 在独立审计契约通过后写入。

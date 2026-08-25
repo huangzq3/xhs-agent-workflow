@@ -57,7 +57,7 @@ case "$EXPLICIT_TARGET" in
     ;;
 esac
 
-for skill in xhs-workflow xhs-persona xhs-topic-report xhs-writer xhs-publish xhs-content-review xhs-iterate; do
+for skill in xhs-workflow xhs-persona xhs-topic-report xhs-writer article-audit xhs-publish xhs-content-review xhs-iterate; do
   source_dir="$SKILLS_SOURCE/$skill"
   skill_file="$source_dir/SKILL.md"
   [ -f "$skill_file" ] || { echo "错误：缺少 $skill_file" >&2; exit 2; }
@@ -82,7 +82,7 @@ INSTALLED=0
 SKIPPED=0
 BACKED_UP=0
 
-for skill in xhs-workflow xhs-persona xhs-topic-report xhs-writer xhs-publish xhs-content-review xhs-iterate; do
+for skill in xhs-workflow xhs-persona xhs-topic-report xhs-writer article-audit xhs-publish xhs-content-review xhs-iterate; do
   source_dir="$SKILLS_SOURCE/$skill"
   target_dir="$SKILLS_TARGET/$skill"
 
@@ -126,15 +126,10 @@ fi
 if command -v python3 >/dev/null 2>&1 && python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null; then
   python3 "$SKILLS_SOURCE/xhs-workflow/scripts/workflow_cli.py" --help >/dev/null
   python3 "$SKILLS_SOURCE/xhs-workflow/scripts/portfolio_cli.py" --help >/dev/null
+  python3 "$SKILLS_SOURCE/article-audit/scripts/article_audit_cli.py" --help >/dev/null
   echo "可选能力：Python 辅助器可用"
 else
   echo "可选能力：Python 3.9+ 不可用；改用当前 Agent 的文件能力维护相同机器契约"
-fi
-
-if command -v python3 >/dev/null 2>&1 && python3 -c 'import PIL' 2>/dev/null; then
-  echo "可选能力：Pillow 可用于本地文字卡渲染和图片核对"
-else
-  echo "可选能力：未安装 Pillow，本地文字卡渲染和图片定稿不可用"
 fi
 
 if command -v python3 >/dev/null 2>&1 && python3 -c 'import jsonschema' 2>/dev/null; then

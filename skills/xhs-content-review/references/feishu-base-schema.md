@@ -18,11 +18,15 @@ snapshot_artifact_id、content_artifact_id、captured_at、window、measurement_
 
 ### Reviews
 
-review_artifact_id、content_artifact_id、strategy_artifact_id、baseline_json、observations_json、hypotheses_json、lifecycle_assessment_json、persona_validation_json、trust_observations_json、long_tail_observations_json、limitations。
+review_artifact_id、content_artifact_id、strategy_artifact_id、persona_artifact_id、baseline_json、observations_json、hypotheses_json、lifecycle_assessment_json、persona_validation_json、positioning_evidence_streams_json、market_mirror_json、trust_observations_json、long_tail_observations_json、limitations。
+
+`positioning_evidence_streams_json` 必须显式保留受众共鸣、内容兑现、平台分发、创作者适配和商业适配五条证据流；不得只同步一个综合分。`market_mirror_json` 保留受众对账号的真实复述及其证据引用，不得改写成运营者希望看到的标签。
 
 ### Experiments
 
-experiment_artifact_id、intervention_type、hypothesis、independent_variable、target_metric、window、state、result。
+experiment_artifact_id、review_artifact_id、experiment_mode、hypothesis、hypothesis_refs、probe_question、diversity_dimensions、evidence_plan_json、intervention_type、independent_variable、control、target_metric、window、state、result。
+
+探索型实验允许有计划地改变多个差异维度以增加信息量；只有 `controlled_optimization` 才应要求单一自变量和对照。两者不得在看板中混为同一类“A/B 测试”。
 
 ## 聚合规则
 

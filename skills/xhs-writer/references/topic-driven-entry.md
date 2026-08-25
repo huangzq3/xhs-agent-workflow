@@ -6,7 +6,7 @@
 
 1. 校验 topic_report。
 2. 确认 topic_id 位于 selected_topic_ids。
-3. 读取对应 candidate 的 premise、audience_need、evidence_refs、risks 和 content_angles。
+3. 读取对应 candidate 的 premise、audience_need、positioning_trace、evidence_refs、risks 和 content_angles。
 4. 通过 evidence_refs 读取证据；不得解析 Markdown 或 HTML。
 
 ## 写入 content
@@ -15,9 +15,10 @@
 - topic_id
 - strategy_artifact_id
 - persona_artifact_id
+- positioning_trace（必须与已确认 candidate 完全一致）
 - content_objective
 - content_sequence_no（试运营序列使用，否则 null）
 - 继承使用的 provenance
 - 新增 claims、personal_experiences、assets
 
-若内容负责人要求更换主题，新建或修订 topic_report 并重新执行 G2，不直接改写已批准选题。
+若内容负责人要求更换主题、受众任务、交付价值、证据职责、记忆资产或定位假设，新建或修订 topic_report 并重新执行 G2，不直接改写已批准选题或只修改 content 的追踪字段。

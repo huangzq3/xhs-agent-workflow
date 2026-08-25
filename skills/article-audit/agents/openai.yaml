@@ -1,0 +1,4 @@
+interface:
+  display_name: "通用文章审计"
+  short_description: "以独立审计 Agent 核查文章事实、逻辑、结构与语言"
+  default_prompt: "使用 $article-audit 独立审查这份冻结稿件并生成可追溯问题清单。"

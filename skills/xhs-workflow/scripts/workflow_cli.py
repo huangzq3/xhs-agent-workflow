@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Deterministic state, validation, approval, audit, and rendering for XHS Workflow V2.2."""
+"""Deterministic state, validation, approval, audit, and rendering for XHS Workflow V2.4."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import html
+import importlib.util
 import json
 import re
 import sys
@@ -15,13 +16,17 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-SCHEMA_VERSION = "2.2.0"
+SCHEMA_VERSION = "2.4.0"
+SCHEMA_V23 = "2.3.0"
+SUPPORTED_SCHEMA_VERSIONS = {"2.2.0", SCHEMA_V23, SCHEMA_VERSION}
+DIRECTION_SCHEMA_VERSIONS = {SCHEMA_V23, SCHEMA_VERSION}
 ARTIFACT_TYPES = {
     "run_manifest",
     "account_strategy",
     "persona",
     "topic_report",
     "content",
+    "article_audit",
     "inventory_item",
     "publication",
     "metrics_snapshot",
@@ -73,11 +78,28 @@ PAYLOAD_REQUIRED = {
     "persona": {"revision", "supersedes_artifact_id", "strategy_artifact_id", "mode", "hypotheses", "validation_plan", "identity", "niche", "audience", "differentiation", "content_pillars", "voice", "boundaries"},
     "topic_report": {"objective", "strategy_artifact_id", "persona_artifact_id", "research_mode", "requested_topics", "evidence", "candidates", "selected_topic_ids", "limitations"},
     "content": {"revision", "strategy_artifact_id", "persona_artifact_id", "topic_report_artifact_id", "topic_id", "content_objective", "content_sequence_no", "format", "title", "caption", "hashtags", "claims", "personal_experiences", "assets", "change_summary"},
+    "article_audit": {"contract_version", "content_artifact_id", "content_revision", "target_uri", "content_sha256", "hash_mode", "author", "reviewer", "independence", "ruleset", "scope", "risk", "claim_inventory", "findings", "summary"},
     "inventory_item": {"revision", "strategy_artifact_id", "persona_artifact_id", "topic_report_artifact_id", "topic_id", "content_artifact_id", "content_artifact_path", "publication_artifact_id", "publication_artifact_path", "content_sequence_no", "content_objective", "format", "working_title", "same_topic_key", "state", "planned_publish_at", "hold_reason", "policy_check", "measurement_schedule", "history"},
     "publication": {"strategy_artifact_id", "inventory_item_artifact_id", "content_artifact_id", "target_account_id", "platform", "state", "visibility", "asset_order", "policy_check", "post_publish_actions", "attempts"},
     "metrics_snapshot": {"content_artifact_id", "publication_artifact_id", "format", "captured_at", "window", "measurement_kind", "checkpoint_days", "prior_snapshot_artifact_id", "stock_metrics", "flow_metrics", "derived_metrics", "trust_metrics", "qualitative_metrics", "missing_fields", "source"},
     "review": {"strategy_artifact_id", "content_artifact_id", "snapshot_artifact_ids", "baseline", "observations", "hypotheses", "diagnoses", "recommended_interventions", "lifecycle_assessment", "persona_validation", "trust_observations", "long_tail_observations", "limitations"},
     "experiment": {"review_artifact_id", "hypothesis", "intervention_type", "independent_variable", "control", "target_metric", "guardrails", "observation_window", "sample_size_plan", "stop_rule", "state", "strategy_change_proposal"},
+}
+PAYLOAD_REQUIRED_V23 = {
+    "account_strategy": {"creator_direction"},
+    "persona": {"positioning_diagnosis", "direction_alignment"},
+}
+PAYLOAD_REQUIRED_V24 = {
+    "persona": {"positioning_state", "validation_evidence"},
+    "content": {"positioning_trace"},
+    "review": {"persona_artifact_id", "positioning_evidence_streams", "market_mirror"},
+    "experiment": {
+        "experiment_mode",
+        "hypothesis_refs",
+        "probe_question",
+        "diversity_dimensions",
+        "evidence_plan",
+    },
 }
 REQUIRED_CAPABILITY_KEYS = {
     "local_json_storage",
@@ -88,7 +110,7 @@ REQUIRED_CAPABILITY_KEYS = {
     "native_image_generation",
     "metrics_collection",
 }
-OPTIONAL_CAPABILITY_KEYS = {"scheduled_execution"}
+OPTIONAL_CAPABILITY_KEYS = {"independent_agent_review", "scheduled_execution"}
 CAPABILITY_KEYS = REQUIRED_CAPABILITY_KEYS | OPTIONAL_CAPABILITY_KEYS
 CAPABILITY_STATUSES = {"available", "unavailable", "unknown"}
 EXECUTION_MODES = {"undetermined", "full", "assisted", "document_only"}
@@ -105,6 +127,41 @@ RUN_TYPES = {
 LIFECYCLE_STAGES = {"trial", "scale", "stabilize", "flywheel"}
 CONTENT_OBJECTIVES = {"acquisition", "trust", "tag_strengthening"}
 THRESHOLD_BASES = {"account_baseline", "experience_seed", "manual", "unset"}
+POSITIONING_PHASES = {"exploration", "consolidation", "stable_within_scope", "reopening"}
+POSITIONING_HYPOTHESIS_COMPONENTS = {
+    "audience",
+    "problem",
+    "value",
+    "relationship",
+    "trust",
+    "proof",
+    "memory",
+    "content_engine",
+    "business_fit",
+    "creator_fit",
+}
+POSITIONING_HYPOTHESIS_STATUSES = {
+    "proposed",
+    "testing",
+    "emerging",
+    "provisionally_established",
+    "under_review",
+    "refuted",
+}
+POSITIONING_EVIDENCE_STREAMS = {
+    "audience_resonance",
+    "delivery_fidelity",
+    "platform_distribution",
+    "creator_fit",
+    "business_fit",
+}
+REQUIRED_STABLE_EVIDENCE_STREAMS = {
+    "audience_resonance",
+    "delivery_fidelity",
+    "platform_distribution",
+    "creator_fit",
+}
+POSITIONING_RESULT_VERDICTS = {"supported", "refuted", "inconclusive", "not_tested"}
 SCHEDULE_METHODS = {"platform_native", "agent_wakeup", "manual_handoff"}
 PUBLISHED_AT_SOURCES = {"platform_metadata", "remote_page_verified", "human_confirmed"}
 INVENTORY_STATES = {"idea", "draft", "review_ready", "ready", "scheduled", "held", "published", "archived"}
@@ -148,6 +205,13 @@ ACCOUNT_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,63}$")
 SHA_RE = re.compile(r"^[a-f0-9]{64}$")
 WINDOW_RE = re.compile(r"^(?:发布后)?\s*(\d+(?:\.\d+)?)\s*(h|d|小时|天)$", re.IGNORECASE)
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "references" / "schemas" / "artifact.schema.json"
+ARTICLE_AUDIT_MODULE_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "article-audit"
+    / "scripts"
+    / "article_audit_cli.py"
+)
+_ARTICLE_AUDIT_MODULE: Any | None = None
 
 # Internal codes stay stable for machine handoffs. Everything below is the human
 # presentation dictionary and must be used before showing a value to a person.
@@ -157,6 +221,7 @@ ARTIFACT_LABELS = {
     "persona": "账号定位",
     "topic_report": "选题分析",
     "content": "内容稿件",
+    "article_audit": "独立文章审计",
     "inventory_item": "内容库存项",
     "publication": "发布记录",
     "metrics_snapshot": "数据快照",
@@ -212,8 +277,50 @@ DECISION_LABELS = {
 VALUE_LABELS = {
     **STATUS_LABELS,
     **DECISION_LABELS,
-    "assumed": "试运营定位（待验证）",
-    "validated": "已验证定位",
+    "assumed": "定位探索中（待验证）",
+    "validated": "当前范围内已稳定",
+    "exploration": "探索定位空间",
+    "consolidation": "阶段性收敛",
+    "stable_within_scope": "当前范围内稳定",
+    "reopening": "重新检验定位",
+    "proposed": "待开始验证",
+    "testing": "验证中",
+    "emerging": "正在形成",
+    "provisionally_established": "阶段性成立",
+    "under_review": "重新审视中",
+    "refuted": "已被反向证据推翻",
+    "explore": "探索未知",
+    "confirm": "确认已有信号",
+    "challenge": "主动寻找反证",
+    "supported": "得到支持",
+    "inconclusive": "暂不能判断",
+    "not_tested": "未获得有效检验",
+    "sufficient": "有效曝光充分",
+    "insufficient": "有效曝光不足",
+    "met": "内容已兑现承诺",
+    "not_met": "内容未兑现承诺",
+    "supportive": "形成支持",
+    "concerning": "出现风险",
+    "neutral": "暂无方向性",
+    "audience_resonance": "受众共鸣",
+    "delivery_fidelity": "内容兑现",
+    "platform_distribution": "平台分发",
+    "creator_fit": "创作者可持续性",
+    "business_fit": "业务适配",
+    "audience": "目标受众",
+    "problem": "受众问题",
+    "value": "核心价值",
+    "relationship": "关系角色",
+    "proof": "信任证据",
+    "memory": "受众记忆",
+    "content_engine": "内容引擎",
+    "recall": "受众记忆",
+    "follow_reason": "关注理由",
+    "qualified_demand": "合格需求",
+    "wrong_expectation": "错误期待",
+    "nonresponse": "没有出现预期反应",
+    "exploration_probe": "探索性探针",
+    "controlled_optimization": "受控优化",
     "trial": "试运营期",
     "scale": "增长期",
     "stabilize": "稳定期",
@@ -285,6 +392,37 @@ VALUE_LABELS = {
     "hypothesis": "待验证假设",
     "human": "内容负责人",
     "agent": "运行助手",
+    "passed": "审计通过",
+    "audit_failed": "审计未通过",
+    "human_decision_required": "需要内容负责人决定",
+    "P0": "必须先解决",
+    "P1": "定稿前应解决",
+    "P2": "优化建议",
+    "independent_full_text_review": "独立通读并重新提取主张",
+    "canonical_json": "规范化内容指纹",
+    "raw_bytes": "原始文件指纹",
+    "article-audit-core": "通用文章审计核心规则",
+    "payload.title": "标题",
+    "payload.caption": "正文",
+    "payload.hashtags": "话题标签",
+    "payload.cards": "图文卡片",
+    "payload.shots": "视频分镜",
+    "fact_and_source": "事实与来源",
+    "quote_and_attribution": "引语与归属",
+    "logic_and_consistency": "逻辑与一致性",
+    "structure_and_redundancy": "结构与重复",
+    "language_and_terminology": "语言与术语",
+    "cross_surface_consistency": "跨表面一致性",
+    "uncertainty_and_decisions": "不确定信息与待决定事项",
+    "custom_profile": "显式定制规则",
+    "material": "关键主张",
+    "non_material": "非关键主张",
+    "verified": "已核实",
+    "unverified": "无法核实",
+    "contradicted": "与证据冲突",
+    "not_applicable": "无需核实",
+    "open": "尚未解决",
+    "resolved": "已经解决",
     "platform_native": "使用平台原生定时发布",
     "agent_wakeup": "由当前运行工具到点唤醒执行",
     "manual_handoff": "由账号负责人到点手动发布",
@@ -295,11 +433,21 @@ VALUE_LABELS = {
     "missed": "已错过允许执行时间",
     "awaiting_verification": "等待核对是否已上线",
     "awaiting_submission": "等待提交平台排期",
+    "initial_definition": "首次建立定位",
+    "foundation_unclear": "定位底座不清",
+    "delivery_inconsistent": "内容兑现不稳定",
+    "wrong_audience": "持续吸引错误人群",
+    "evidence_insufficient": "证据不足，暂不改定位",
+    "create": "建立定位",
+    "revise": "修订定位",
+    "keep": "保留当前定位",
+    "test_first": "先补充验证",
 }
 CAPABILITY_LABELS = {
     "local_json_storage": "本地保存工作数据",
     "append_audit_log": "追加审计记录",
     "human_approval": "接收人工确认",
+    "independent_agent_review": "启动独立上下文的只读文章审计",
     "web_research": "网页资料研究",
     "authenticated_platform_control": "使用已登录的平台页面",
     "native_image_generation": "使用当前工具的原生生图能力",
@@ -367,10 +515,56 @@ FIELD_LABELS = {
     "target_ready_items": "可发布内容目标数量",
     "experience_seed_refs": "经验样本",
     "limitations": "已知局限",
+    "creator_direction": "创作者长期方向",
+    "primary_90_day_outcome": "90 天唯一主要结果",
+    "business_destination": "长期业务或用途去向",
+    "audience_business_fit": "受众与业务承接关系",
+    "current_value": "当前价值",
+    "future_value": "持续关注价值",
+    "relationship_posture": "与受众的关系姿态",
+    "trust_engine": "信任形成方式",
+    "content_engine": "可持续内容来源",
+    "memory_assets": "账号记忆资产",
+    "supporting": "辅助记忆资产",
+    "red_lines": "创作者表达红线",
+    "assumptions": "当前假设",
+    "unknowns": "仍待验证",
     "mode": "定位状态",
+    "positioning_diagnosis": "定位问题判断",
+    "diagnosis_type": "当前问题类型",
+    "recommended_action": "建议动作",
+    "direction_alignment": "创作者方向在本账号的落地",
+    "account_role": "本账号承担的角色",
+    "account_current_value": "本账号提供的当前价值",
+    "account_future_value": "本账号提供的持续价值",
+    "relationship_expression": "关系姿态如何被看见",
+    "trust_expression": "信任如何被证明",
+    "content_engine_expression": "内容来源如何持续",
+    "memory_asset_expression": "主记忆资产如何出现",
+    "business_connection": "与业务去向的连接",
+    "tensions": "当前冲突与取舍",
     "hypotheses": "待验证假设",
     "hypothesis_id": "假设编号",
+    "component": "定位组成部分",
     "statement": "假设内容",
+    "observable_implication": "成立时应观察到什么",
+    "falsification_signal": "什么现象会推翻它",
+    "counter_evidence_refs": "反向证据",
+    "review_by": "下次复核时间",
+    "positioning_state": "定位生长状态",
+    "phase": "当前生长阶段",
+    "stable_core": "暂时保持稳定的核心",
+    "open_questions": "仍待回答的问题",
+    "anti_audience": "不主动吸引的人群",
+    "anti_positioning": "不希望形成的账号认知",
+    "validation_evidence": "定位收敛证据",
+    "review_artifact_refs": "复盘记录",
+    "experiment_artifact_refs": "已批准的迭代实验",
+    "content_artifact_refs": "共同支持的内容",
+    "snapshot_artifact_refs": "数据快照",
+    "evidence_streams_covered": "已覆盖证据维度",
+    "counter_evidence_reviewed": "是否复核反向证据",
+    "reviewed_at": "本次复核时间",
     "validation_plan": "验证计划",
     "sample_target": "计划验证样本数",
     "diversity_dimensions": "需要覆盖的差异维度",
@@ -378,10 +572,10 @@ FIELD_LABELS = {
     "stop_conditions": "停止或调整条件",
     "identity": "账号身份与定位",
     "display_name": "账号名称",
-    "positioning_statement": "定位说明",
+    "positioning_statement": "当前定位工作假设",
     "credentials": "可核对的背景依据",
-    "niche": "内容方向",
-    "primary": "主要方向",
+    "niche": "当前探索的问题空间",
+    "primary": "当前主要问题空间",
     "subtopics": "细分方向",
     "formats": "内容形式",
     "audience": "目标受众",
@@ -396,6 +590,15 @@ FIELD_LABELS = {
     "non_goals": "明确不做",
     "content_pillars": "内容支柱",
     "pillar_id": "内容支柱编号",
+    "audience_segment_refs": "服务的受众分组",
+    "audience_job": "服务的具体任务",
+    "value_delivered": "交付的稳定价值",
+    "proof_role": "承担的信任证明",
+    "memory_asset": "本篇强化的记忆资产",
+    "hypothesis_refs": "关联的待验证假设",
+    "positioning_trace": "本篇定位验证任务",
+    "persona_revision": "定位版本",
+    "probe_type": "验证角色",
     "boundaries": "边界",
     "topic_seeds": "可尝试的选题方向",
     "voice": "表达风格",
@@ -447,6 +650,52 @@ FIELD_LABELS = {
     "generator_capability_id": "使用的生成能力",
     "change_summary": "本次修改摘要",
     "safety_notes": "安全提醒",
+    "authorship": "稿件作者身份",
+    "article_audit_ref": "独立审计引用",
+    "contract_version": "审计契约版本",
+    "content_artifact_id": "被审计稿件",
+    "content_revision": "被审计稿件版本",
+    "target_uri": "被审计稿件位置",
+    "content_sha256": "被审计内容指纹",
+    "hash_mode": "指纹计算方式",
+    "author": "稿件作者",
+    "reviewer": "独立审计者",
+    "context_id": "独立上下文记录",
+    "model_id": "模型记录",
+    "independence": "写审分离证明",
+    "separate_agent": "是否使用不同 Agent",
+    "separate_context": "是否使用全新上下文",
+    "read_only": "是否保持只读",
+    "prompt_injection_treated_as_data": "是否把材料指令仅作为数据",
+    "ruleset": "审计规则集",
+    "ruleset_id": "规则集名称",
+    "version": "规则集版本",
+    "core_dimensions": "通用审计维度",
+    "custom_profile_refs": "显式定制规则",
+    "scope": "审计覆盖范围",
+    "surface_paths": "已审阅的最终呈现表面",
+    "risk": "内容风险判断",
+    "level": "风险等级",
+    "model_diversity_used": "是否使用不同模型复核",
+    "claim_inventory": "独立提取的主张清单",
+    "method": "提取方法",
+    "coverage_notes": "覆盖说明",
+    "materiality": "主张重要程度",
+    "surface_path": "内容位置",
+    "findings": "审计发现",
+    "finding_id": "问题编号",
+    "severity": "问题等级",
+    "dimension": "审计维度",
+    "locator": "原文位置",
+    "excerpt": "相关原文",
+    "issue": "问题说明",
+    "claim_refs": "关联主张",
+    "recommendation": "修订方向",
+    "summary": "审计结论",
+    "verdict": "审计状态",
+    "counts": "尚未解决的问题数量",
+    "artifact_path": "审计记录位置",
+    "payload_sha256": "审计记录指纹",
     "cards": "图文卡片",
     "shots": "视频分镜",
     "working_title": "工作标题",
@@ -468,7 +717,7 @@ FIELD_LABELS = {
     "from": "原状态",
     "to": "新状态",
     "at": "时间",
-    "actor_id": "操作人",
+    "actor_id": "角色标识",
     "actor_type": "操作角色",
     "reason": "原因",
     "target_account_id": "目标账号",
@@ -516,11 +765,27 @@ FIELD_LABELS = {
     "requires_human_confirmation": "是否需要人工确认",
     "persona_validation": "定位验证情况",
     "hypothesis_results": "假设验证结果",
+    "proposed_mode": "建议的定位状态",
+    "positioning_evidence_streams": "定位证据全景",
+    "market_mirror": "受众如何描述账号",
+    "signal_type": "受众信号类型",
+    "audience_language": "受众使用的原话或概括",
+    "delivery_fidelity": "内容是否兑现定位承诺",
+    "qualified_exposure": "是否获得有效曝光",
+    "content_artifact_ids": "关联内容",
+    "snapshot_artifact_ids": "关联数据快照",
     "revision_recommended": "是否建议修订定位",
     "trust_observations": "信任表现观察",
     "long_tail_observations": "长尾表现观察",
     "review_artifact_id": "复盘记录",
     "hypothesis": "本次实验假设",
+    "experiment_mode": "实验方式",
+    "probe_question": "本轮要回答的问题",
+    "diversity_dimensions": "探索差异维度",
+    "evidence_plan": "证据采集计划",
+    "required_evidence_streams": "需要采集的证据维度",
+    "qualified_exposure_rule": "有效曝光判断规则",
+    "delivery_fidelity_rule": "内容兑现判断规则",
     "intervention_type": "实验方向",
     "independent_variable": "唯一调整项",
     "control": "保持不变的部分",
@@ -531,6 +796,9 @@ FIELD_LABELS = {
     "stop_rule": "停止条件",
     "result": "实验结果",
     "persona_change_proposal": "账号定位修订建议",
+    "target_hypothesis_ids": "建议作用的定位假设",
+    "requires_new_persona_revision": "是否必须建立新定位版本",
+    "migration_actions": "账号表达迁移动作",
     "strategy_change_proposal": "账号策略修订建议",
 }
 METRIC_LABELS = {
@@ -560,6 +828,7 @@ EVENT_LABELS = {
     "published_time_confirmed": "核对实际上线时间",
     "artifact_superseded": "用新版本替代旧版本",
     "artifact_registered": "登记阶段产物",
+    "article_audit_linked": "绑定独立文章审计",
     "gate_approved": "人工确认通过",
     "gate_rejected": "人工退回修改",
     "gate_revoked": "人工撤销确认",
@@ -572,15 +841,19 @@ REPORT_SECTIONS = {
         ("需要处理的问题", ("errors",)),
     ],
     "account_strategy": [
+        ("创作者方向", ("creator_direction",)),
         ("账号阶段", ("lifecycle_stage", "stage_confidence", "persona_mode", "play_mode", "transition", "stage_evidence")),
         ("内容目标", ("content_objectives",)),
         ("运营规则", ("publishing_policy", "inventory_policy", "measurement_policy")),
         ("依据与局限", ("experience_seed_refs", "limitations")),
     ],
     "persona": [
-        ("定位结论", ("mode", "identity", "niche", "audience", "differentiation")),
+        ("定位问题判断", ("positioning_diagnosis",)),
+        ("创作者方向落地", ("direction_alignment",)),
+        ("定位生长状态", ("mode", "positioning_state", "validation_evidence")),
+        ("当前账号表达", ("identity", "niche", "audience", "differentiation")),
         ("内容表达", ("content_pillars", "voice", "visual", "boundaries")),
-        ("试运营验证", ("hypotheses", "validation_plan")),
+        ("定位假设与验证", ("hypotheses", "validation_plan")),
     ],
     "topic_report": [
         ("选题任务", ("objective", "research_mode", "requested_topics")),
@@ -589,9 +862,17 @@ REPORT_SECTIONS = {
     ],
     "content": [
         ("内容预览", ("title", "caption", "hashtags", "format", "content_objective", "content_sequence_no")),
+        ("本篇定位验证任务", ("positioning_trace",)),
         ("画面与素材", ("cards", "shots", "assets")),
         ("真实性核对", ("claims", "personal_experiences", "safety_notes")),
         ("修改说明", ("change_summary",)),
+    ],
+    "article_audit": [
+        ("审计结论", ("summary", "risk")),
+        ("写审分离", ("independence",)),
+        ("覆盖范围与规则", ("ruleset", "scope")),
+        ("独立提取的主张", ("claim_inventory",)),
+        ("审计发现", ("findings",)),
     ],
     "inventory_item": [
         ("库存安排", ("working_title", "state", "content_objective", "format", "planned_publish_at", "hold_reason")),
@@ -616,12 +897,14 @@ REPORT_SECTIONS = {
         ("对比基线与观察", ("baseline", "observations", "trust_observations", "long_tail_observations")),
         ("可能原因", ("hypotheses", "diagnoses")),
         ("下一步建议", ("recommended_interventions",)),
+        ("定位证据全景", ("positioning_evidence_streams", "market_mirror")),
         ("账号阶段与定位复核", ("lifecycle_assessment", "persona_validation")),
         ("局限", ("limitations",)),
     ],
     "experiment": [
-        ("实验目标", ("hypothesis", "intervention_type", "independent_variable", "control")),
-        ("判断方式", ("target_metric", "guardrails", "observation_window", "sample_size_plan", "stop_rule")),
+        ("实验目标", ("experiment_mode", "hypothesis", "hypothesis_refs", "intervention_type", "probe_question")),
+        ("探索与控制", ("diversity_dimensions", "independent_variable", "control")),
+        ("判断方式", ("evidence_plan", "target_metric", "guardrails", "observation_window", "sample_size_plan", "stop_rule")),
         ("当前结果与修订建议", ("state", "result", "persona_change_proposal", "strategy_change_proposal")),
     ],
 }
@@ -657,6 +940,26 @@ def atomic_write_json(path: Path, value: dict[str, Any]) -> None:
     temp = path.with_suffix(path.suffix + ".tmp")
     temp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temp.replace(path)
+
+
+def article_audit_contract() -> Any:
+    """Load the standalone article-audit contract without coupling writer logic to it."""
+    global _ARTICLE_AUDIT_MODULE
+    if _ARTICLE_AUDIT_MODULE is not None:
+        return _ARTICLE_AUDIT_MODULE
+    if not ARTICLE_AUDIT_MODULE_PATH.is_file():
+        raise WorkflowError(
+            "缺少独立文章审计契约；请确认 article-audit Skill 与 xhs-workflow 一起安装"
+        )
+    spec = importlib.util.spec_from_file_location(
+        "xhs_article_audit_contract", ARTICLE_AUDIT_MODULE_PATH
+    )
+    if spec is None or spec.loader is None:
+        raise WorkflowError("无法加载独立文章审计契约")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _ARTICLE_AUDIT_MODULE = module
+    return module
 
 
 def approval_view(value: Any) -> Any:
@@ -737,6 +1040,26 @@ def require_list(value: Any, field: str, errors: list[str]) -> list[Any]:
     return value
 
 
+def require_nonempty_string_list(
+    value: Any, field: str, errors: list[str]
+) -> list[str]:
+    items = require_list(value, field, errors)
+    valid_items: list[str] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, str) or not item.strip():
+            errors.append(f"{field}[{index}] 必须是非空字符串")
+            continue
+        valid_items.append(item.strip())
+    return valid_items
+
+
+def require_nonempty_text(value: Any, field: str, errors: list[str]) -> str:
+    if not isinstance(value, str) or not value.strip():
+        errors.append(f"{field} 必须是非空字符串")
+        return ""
+    return value.strip()
+
+
 def is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
@@ -744,6 +1067,30 @@ def is_number(value: Any) -> bool:
 def validate_positive_int_or_null(value: Any, field: str, errors: list[str]) -> None:
     if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value <= 0):
         errors.append(f"{field} 必须是正整数或 null")
+
+
+def validate_positioning_trace(value: Any, field: str, errors: list[str]) -> dict[str, Any]:
+    trace = require_object(value, field, errors)
+    revision = trace.get("persona_revision")
+    if not isinstance(revision, int) or isinstance(revision, bool) or revision <= 0:
+        errors.append(f"{field}.persona_revision 必须是正整数")
+    for name in (
+        "pillar_id",
+        "audience_job",
+        "value_delivered",
+        "proof_role",
+        "memory_asset",
+    ):
+        require_nonempty_text(trace.get(name), f"{field}.{name}", errors)
+    for name in ("audience_segment_refs", "hypothesis_refs"):
+        refs = require_nonempty_string_list(trace.get(name), f"{field}.{name}", errors)
+        if not refs:
+            errors.append(f"{field}.{name} 至少需要一项")
+        if len(refs) != len(set(refs)):
+            errors.append(f"{field}.{name} 不得重复")
+    if trace.get("probe_type") not in {"explore", "confirm", "challenge"}:
+        errors.append(f"{field}.probe_type 无效")
+    return trace
 
 
 def validate_policy_check(value: Any, field: str, errors: list[str]) -> None:
@@ -845,8 +1192,12 @@ def validate_artifact(artifact: dict[str, Any]) -> list[str]:
     if missing:
         errors.append("缺少顶层字段：" + ", ".join(missing))
 
-    if artifact.get("schema_version") != SCHEMA_VERSION:
-        errors.append(f"schema_version 必须是 {SCHEMA_VERSION}")
+    schema_version = artifact.get("schema_version")
+    if schema_version not in SUPPORTED_SCHEMA_VERSIONS:
+        errors.append(
+            "schema_version 必须是受支持版本："
+            + ", ".join(sorted(SUPPORTED_SCHEMA_VERSIONS))
+        )
     artifact_type = artifact.get("artifact_type")
     if artifact_type not in ARTIFACT_TYPES:
         errors.append(f"不支持的 artifact_type：{artifact_type}")
@@ -909,6 +1260,14 @@ def validate_artifact(artifact: dict[str, Any]) -> list[str]:
         missing_payload = sorted(PAYLOAD_REQUIRED[artifact_type] - set(payload))
         if missing_payload:
             errors.append("payload 缺少字段：" + ", ".join(missing_payload))
+        if schema_version in DIRECTION_SCHEMA_VERSIONS:
+            missing_v23 = sorted(PAYLOAD_REQUIRED_V23.get(artifact_type, set()) - set(payload))
+            if missing_v23:
+                errors.append("payload 缺少 V2.3 字段：" + ", ".join(missing_v23))
+        if schema_version == SCHEMA_VERSION:
+            missing_v24 = sorted(PAYLOAD_REQUIRED_V24.get(artifact_type, set()) - set(payload))
+            if missing_v24:
+                errors.append("payload 缺少 V2.4 字段：" + ", ".join(missing_v24))
 
     if artifact_type == "run_manifest":
         if payload.get("run_type") not in RUN_TYPES:
@@ -1006,6 +1365,44 @@ def validate_artifact(artifact: dict[str, Any]) -> list[str]:
             )
         require_list(data_scope.get("personal_data"), "payload.data_scope.personal_data", errors)
     elif artifact_type == "account_strategy":
+        if schema_version in DIRECTION_SCHEMA_VERSIONS:
+            direction = require_object(payload.get("creator_direction"), "payload.creator_direction", errors)
+            direction_fields = (
+                "primary_90_day_outcome",
+                "business_destination",
+                "audience_business_fit",
+                "current_value",
+                "future_value",
+                "relationship_posture",
+                "trust_engine",
+                "content_engine",
+            )
+            for field in direction_fields:
+                value = direction.get(field)
+                if value is not None and not isinstance(value, str):
+                    errors.append(f"creator_direction.{field} 必须是 string 或 null")
+            memory_assets = require_object(
+                direction.get("memory_assets"), "payload.creator_direction.memory_assets", errors
+            )
+            primary_asset = memory_assets.get("primary")
+            if primary_asset is not None and not isinstance(primary_asset, str):
+                errors.append("creator_direction.memory_assets.primary 必须是 string 或 null")
+            supporting_assets = require_nonempty_string_list(
+                memory_assets.get("supporting"),
+                "payload.creator_direction.memory_assets.supporting",
+                errors,
+            )
+            if len(supporting_assets) > 2:
+                errors.append("creator_direction.memory_assets.supporting 最多两个")
+            require_nonempty_string_list(
+                memory_assets.get("evidence_refs"),
+                "payload.creator_direction.memory_assets.evidence_refs",
+                errors,
+            )
+            for field in ("red_lines", "evidence_refs", "assumptions", "unknowns"):
+                require_nonempty_string_list(
+                    direction.get(field), f"payload.creator_direction.{field}", errors
+                )
         if payload.get("lifecycle_stage") not in LIFECYCLE_STAGES:
             errors.append("account_strategy.lifecycle_stage 无效")
         if payload.get("stage_confidence") not in {"low", "medium", "high"}:
@@ -1099,17 +1496,160 @@ def validate_artifact(artifact: dict[str, Any]) -> list[str]:
         require_list(payload.get("experience_seed_refs"), "payload.experience_seed_refs", errors)
         require_list(payload.get("limitations"), "payload.limitations", errors)
     elif artifact_type == "persona":
+        persona_revision = payload.get("revision")
+        if (
+            not isinstance(persona_revision, int)
+            or isinstance(persona_revision, bool)
+            or persona_revision < 1
+        ):
+            errors.append("persona.revision 必须是正整数")
+        if schema_version in DIRECTION_SCHEMA_VERSIONS:
+            diagnosis = require_object(
+                payload.get("positioning_diagnosis"), "payload.positioning_diagnosis", errors
+            )
+            diagnosis_type = diagnosis.get("diagnosis_type")
+            recommended_action = diagnosis.get("recommended_action")
+            if diagnosis_type not in {
+                "initial_definition",
+                "foundation_unclear",
+                "delivery_inconsistent",
+                "wrong_audience",
+                "evidence_insufficient",
+            }:
+                errors.append("positioning_diagnosis.diagnosis_type 无效")
+            if recommended_action not in {"create", "revise", "keep", "test_first"}:
+                errors.append("positioning_diagnosis.recommended_action 无效")
+            require_nonempty_text(
+                diagnosis.get("rationale"), "payload.positioning_diagnosis.rationale", errors
+            )
+            diagnosis_evidence = require_nonempty_string_list(
+                diagnosis.get("evidence_refs"),
+                "payload.positioning_diagnosis.evidence_refs",
+                errors,
+            )
+            if not diagnosis_evidence:
+                errors.append("positioning_diagnosis.evidence_refs 至少需要一条依据")
+            require_nonempty_string_list(
+                diagnosis.get("alternative_explanations"),
+                "payload.positioning_diagnosis.alternative_explanations",
+                errors,
+            )
+            if diagnosis_type == "initial_definition" and recommended_action != "create":
+                errors.append("首次建立定位时 recommended_action 必须是 create")
+            if diagnosis_type != "initial_definition" and recommended_action == "create":
+                errors.append("非首次建立定位时不得建议 create")
+            if diagnosis_type in {"delivery_inconsistent", "evidence_insufficient"} and recommended_action == "revise":
+                errors.append("内容兑现不稳定或证据不足时不得直接建议修订定位")
+
+            alignment = require_object(
+                payload.get("direction_alignment"), "payload.direction_alignment", errors
+            )
+            for field in (
+                "account_role",
+                "account_current_value",
+                "account_future_value",
+                "relationship_expression",
+                "trust_expression",
+                "content_engine_expression",
+                "memory_asset_expression",
+                "business_connection",
+            ):
+                require_nonempty_text(
+                    alignment.get(field), f"payload.direction_alignment.{field}", errors
+                )
+            require_nonempty_string_list(
+                alignment.get("tensions"), "payload.direction_alignment.tensions", errors
+            )
+            alignment_evidence = require_nonempty_string_list(
+                alignment.get("evidence_refs"),
+                "payload.direction_alignment.evidence_refs",
+                errors,
+            )
+            if not alignment_evidence:
+                errors.append("direction_alignment.evidence_refs 至少需要一条依据")
         if payload.get("mode") not in {"assumed", "validated"}:
             errors.append("persona.mode 无效")
         hypotheses = require_list(payload.get("hypotheses"), "payload.hypotheses", errors)
+        seen_hypothesis_ids: set[str] = set()
         for index, item in enumerate(hypotheses):
             if not isinstance(item, dict):
                 errors.append(f"persona.hypotheses[{index}] 必须是 object")
                 continue
-            for field in ("hypothesis_id", "statement", "status", "evidence_refs"):
+            required_hypothesis_fields = (
+                "hypothesis_id",
+                "statement",
+                "status",
+                "evidence_refs",
+            )
+            if schema_version == SCHEMA_VERSION:
+                required_hypothesis_fields += (
+                    "component",
+                    "observable_implication",
+                    "falsification_signal",
+                    "confidence",
+                    "scope",
+                    "counter_evidence_refs",
+                    "review_by",
+                )
+            for field in required_hypothesis_fields:
                 if field not in item:
                     errors.append(f"persona.hypotheses[{index}] 缺少 {field}")
-            if item.get("status") not in {"pending", "supported", "refuted", "inconclusive"}:
+            if schema_version in DIRECTION_SCHEMA_VERSIONS:
+                hypothesis_id = require_nonempty_text(
+                    item.get("hypothesis_id"),
+                    f"persona.hypotheses[{index}].hypothesis_id",
+                    errors,
+                )
+                require_nonempty_text(
+                    item.get("statement"),
+                    f"persona.hypotheses[{index}].statement",
+                    errors,
+                )
+                require_nonempty_string_list(
+                    item.get("evidence_refs"),
+                    f"persona.hypotheses[{index}].evidence_refs",
+                    errors,
+                )
+                if schema_version == SCHEMA_VERSION:
+                    if item.get("component") not in POSITIONING_HYPOTHESIS_COMPONENTS:
+                        errors.append(f"persona.hypotheses[{index}].component 无效")
+                    if item.get("status") not in POSITIONING_HYPOTHESIS_STATUSES:
+                        errors.append(f"persona.hypotheses[{index}].status 无效")
+                    if item.get("confidence") not in {"low", "medium", "high"}:
+                        errors.append(f"persona.hypotheses[{index}].confidence 无效")
+                    for field in ("observable_implication", "falsification_signal", "scope"):
+                        require_nonempty_text(
+                            item.get(field),
+                            f"persona.hypotheses[{index}].{field}",
+                            errors,
+                        )
+                    counter_refs = require_nonempty_string_list(
+                        item.get("counter_evidence_refs"),
+                        f"persona.hypotheses[{index}].counter_evidence_refs",
+                        errors,
+                    )
+                    review_by = item.get("review_by")
+                    if review_by is not None:
+                        parse_datetime(
+                            review_by,
+                            f"persona.hypotheses[{index}].review_by",
+                            errors,
+                        )
+                    if item.get("status") in {"emerging", "provisionally_established"} and not item.get("evidence_refs"):
+                        errors.append(
+                            f"persona.hypotheses[{index}] 进入 {item.get('status')} 前必须有支持证据"
+                        )
+                    if item.get("status") == "refuted" and not (
+                        item.get("evidence_refs") or counter_refs
+                    ):
+                        errors.append(f"persona.hypotheses[{index}] 标记 refuted 时必须有证据")
+                elif item.get("status") not in {"pending", "supported", "refuted", "inconclusive"}:
+                    errors.append(f"persona.hypotheses[{index}].status 无效")
+                if hypothesis_id:
+                    if hypothesis_id in seen_hypothesis_ids:
+                        errors.append(f"persona.hypotheses[{index}].hypothesis_id 重复")
+                    seen_hypothesis_ids.add(hypothesis_id)
+            elif item.get("status") not in {"pending", "supported", "refuted", "inconclusive"}:
                 errors.append(f"persona.hypotheses[{index}].status 无效")
         validation_plan = require_object(payload.get("validation_plan"), "payload.validation_plan", errors)
         validate_positive_int_or_null(
@@ -1122,6 +1662,228 @@ def validate_artifact(artifact: dict[str, Any]) -> list[str]:
                 errors.append("assumed persona 至少需要一个可证伪假设")
             if not validation_plan.get("success_signals") or not validation_plan.get("stop_conditions"):
                 errors.append("assumed persona 必须定义 success_signals 和 stop_conditions")
+        if schema_version == SCHEMA_VERSION:
+            positioning_state = require_object(
+                payload.get("positioning_state"), "payload.positioning_state", errors
+            )
+            phase = positioning_state.get("phase")
+            if phase not in POSITIONING_PHASES:
+                errors.append("positioning_state.phase 无效")
+            require_nonempty_text(
+                positioning_state.get("scope"), "payload.positioning_state.scope", errors
+            )
+            for field in (
+                "stable_core",
+                "open_questions",
+                "anti_audience",
+                "anti_positioning",
+            ):
+                require_nonempty_string_list(
+                    positioning_state.get(field), f"payload.positioning_state.{field}", errors
+                )
+            state_review_by = positioning_state.get("review_by")
+            if state_review_by is not None:
+                parse_datetime(state_review_by, "payload.positioning_state.review_by", errors)
+            if payload.get("mode") == "validated" and phase != "stable_within_scope":
+                errors.append("mode=validated 只能表示限定范围内已稳定的定位")
+            if payload.get("mode") == "assumed" and phase == "stable_within_scope":
+                errors.append("phase=stable_within_scope 时 mode 必须为 validated")
+
+            validation_evidence = require_object(
+                payload.get("validation_evidence"), "payload.validation_evidence", errors
+            )
+            review_refs = require_nonempty_string_list(
+                validation_evidence.get("review_artifact_refs"),
+                "payload.validation_evidence.review_artifact_refs",
+                errors,
+            )
+            experiment_refs = require_nonempty_string_list(
+                validation_evidence.get("experiment_artifact_refs"),
+                "payload.validation_evidence.experiment_artifact_refs",
+                errors,
+            )
+            content_refs = require_nonempty_string_list(
+                validation_evidence.get("content_artifact_refs"),
+                "payload.validation_evidence.content_artifact_refs",
+                errors,
+            )
+            snapshot_refs = require_nonempty_string_list(
+                validation_evidence.get("snapshot_artifact_refs"),
+                "payload.validation_evidence.snapshot_artifact_refs",
+                errors,
+            )
+            streams = require_nonempty_string_list(
+                validation_evidence.get("evidence_streams_covered"),
+                "payload.validation_evidence.evidence_streams_covered",
+                errors,
+            )
+            unknown_streams = sorted(set(streams) - POSITIONING_EVIDENCE_STREAMS)
+            if unknown_streams:
+                errors.append("validation_evidence 包含未知证据流：" + ", ".join(unknown_streams))
+            if not isinstance(validation_evidence.get("counter_evidence_reviewed"), bool):
+                errors.append("validation_evidence.counter_evidence_reviewed 必须是 boolean")
+            reviewed_at = validation_evidence.get("reviewed_at")
+            if reviewed_at is not None:
+                parse_datetime(reviewed_at, "payload.validation_evidence.reviewed_at", errors)
+            require_nonempty_string_list(
+                validation_evidence.get("limitations"),
+                "payload.validation_evidence.limitations",
+                errors,
+            )
+            if payload.get("mode") == "validated":
+                if payload.get("revision", 0) < 2 or not payload.get("supersedes_artifact_id"):
+                    errors.append("稳定定位必须是引用上一版本的新 revision")
+                unsettled = [
+                    item.get("hypothesis_id")
+                    for item in hypotheses
+                    if isinstance(item, dict)
+                    and item.get("status") not in {"provisionally_established", "refuted"}
+                ]
+                if unsettled:
+                    errors.append("稳定定位仍包含未收敛假设：" + ", ".join(str(item) for item in unsettled))
+                if not any(
+                    isinstance(item, dict)
+                    and item.get("status") == "provisionally_established"
+                    for item in hypotheses
+                ):
+                    errors.append("稳定定位至少需要一个阶段性成立的定位假设")
+                if not review_refs:
+                    errors.append("稳定定位至少需要一份复盘记录")
+                if len(set(content_refs)) < 2:
+                    errors.append("稳定定位必须由至少两篇不同内容共同支持")
+                if not snapshot_refs:
+                    errors.append("稳定定位至少需要一份数据快照")
+                missing_streams = sorted(REQUIRED_STABLE_EVIDENCE_STREAMS - set(streams))
+                if missing_streams:
+                    errors.append("稳定定位缺少证据流：" + ", ".join(missing_streams))
+                if validation_evidence.get("counter_evidence_reviewed") is not True:
+                    errors.append("稳定定位前必须明确复核反向证据")
+                if reviewed_at is None or state_review_by is None:
+                    errors.append("稳定定位必须记录 reviewed_at 与 review_by")
+
+            allowed_evidence_refs = {
+                source.get("source_id")
+                for source in provenance
+                if isinstance(source, dict) and isinstance(source.get("source_id"), str)
+            }
+            allowed_evidence_refs.update(review_refs)
+            allowed_evidence_refs.update(experiment_refs)
+            allowed_evidence_refs.update(content_refs)
+            allowed_evidence_refs.update(snapshot_refs)
+            evidence_fields: list[tuple[str, list[Any]]] = [
+                ("positioning_diagnosis.evidence_refs", diagnosis.get("evidence_refs", [])),
+                ("direction_alignment.evidence_refs", alignment.get("evidence_refs", [])),
+            ]
+            for index, item in enumerate(hypotheses):
+                if isinstance(item, dict):
+                    evidence_fields.extend(
+                        [
+                            (f"hypotheses[{index}].evidence_refs", item.get("evidence_refs", [])),
+                            (
+                                f"hypotheses[{index}].counter_evidence_refs",
+                                item.get("counter_evidence_refs", []),
+                            ),
+                        ]
+                    )
+            for index, item in enumerate(payload.get("audience", [])):
+                if isinstance(item, dict):
+                    evidence_fields.append(
+                        (f"audience[{index}].evidence_refs", item.get("evidence_refs", []))
+                    )
+            for field, refs in evidence_fields:
+                for ref in refs if isinstance(refs, list) else []:
+                    if isinstance(ref, str) and ref not in allowed_evidence_refs:
+                        errors.append(f"{field} 引用了未登记证据：{ref}")
+        if schema_version in DIRECTION_SCHEMA_VERSIONS:
+            audience = require_list(payload.get("audience"), "payload.audience", errors)
+            if not audience:
+                errors.append("persona.audience 至少需要一个受众分组")
+            audience_ids: set[str] = set()
+            for index, item in enumerate(audience):
+                if not isinstance(item, dict):
+                    errors.append(f"persona.audience[{index}] 必须是 object")
+                    continue
+                segment_id = require_nonempty_text(
+                    item.get("segment_id"), f"persona.audience[{index}].segment_id", errors
+                )
+                require_nonempty_text(
+                    item.get("name"), f"persona.audience[{index}].name", errors
+                )
+                for field in ("jobs", "pains", "desired_outcomes", "evidence_refs"):
+                    require_nonempty_string_list(
+                        item.get(field), f"persona.audience[{index}].{field}", errors
+                    )
+                if segment_id:
+                    if segment_id in audience_ids:
+                        errors.append(f"persona.audience[{index}].segment_id 重复")
+                    audience_ids.add(segment_id)
+            hypothesis_ids = seen_hypothesis_ids
+            pillars = require_list(payload.get("content_pillars"), "payload.content_pillars", errors)
+            if not pillars:
+                errors.append("persona.content_pillars 至少需要一个内容支柱")
+            pillar_ids: set[str] = set()
+            for index, item in enumerate(pillars):
+                if not isinstance(item, dict):
+                    errors.append(f"content_pillars[{index}] 必须是 object")
+                    continue
+                for field in (
+                    "pillar_id",
+                    "name",
+                    "purpose",
+                    "audience_job",
+                    "value_delivered",
+                    "proof_role",
+                    "business_connection",
+                ):
+                    require_nonempty_text(item.get(field), f"content_pillars[{index}].{field}", errors)
+                if schema_version == SCHEMA_VERSION:
+                    require_nonempty_text(
+                        item.get("memory_asset"),
+                        f"content_pillars[{index}].memory_asset",
+                        errors,
+                    )
+                pillar_id = item.get("pillar_id")
+                if isinstance(pillar_id, str) and pillar_id.strip():
+                    normalized_pillar_id = pillar_id.strip()
+                    if normalized_pillar_id in pillar_ids:
+                        errors.append(f"content_pillars[{index}].pillar_id 重复")
+                    pillar_ids.add(normalized_pillar_id)
+                audience_refs = require_nonempty_string_list(
+                    item.get("audience_segment_refs"),
+                    f"content_pillars[{index}].audience_segment_refs",
+                    errors,
+                )
+                if not audience_refs:
+                    errors.append(f"content_pillars[{index}] 至少关联一个受众分组")
+                audience_ref_ids = set(audience_refs)
+                if len(audience_ref_ids) != len(audience_refs):
+                    errors.append(f"content_pillars[{index}].audience_segment_refs 不得重复")
+                unknown_audiences = sorted(audience_ref_ids - audience_ids)
+                if unknown_audiences:
+                    errors.append(
+                        f"content_pillars[{index}] 引用了不存在的受众分组："
+                        + ", ".join(unknown_audiences)
+                    )
+                hypothesis_refs = require_nonempty_string_list(
+                    item.get("hypothesis_refs"),
+                    f"content_pillars[{index}].hypothesis_refs",
+                    errors,
+                )
+                hypothesis_ref_ids = set(hypothesis_refs)
+                if len(hypothesis_ref_ids) != len(hypothesis_refs):
+                    errors.append(f"content_pillars[{index}].hypothesis_refs 不得重复")
+                unknown_hypotheses = sorted(hypothesis_ref_ids - hypothesis_ids)
+                if unknown_hypotheses:
+                    errors.append(
+                        f"content_pillars[{index}] 引用了不存在的定位假设："
+                        + ", ".join(unknown_hypotheses)
+                    )
+                require_nonempty_string_list(
+                    item.get("boundaries"), f"content_pillars[{index}].boundaries", errors
+                )
+                require_nonempty_string_list(
+                    item.get("topic_seeds"), f"content_pillars[{index}].topic_seeds", errors
+                )
     elif artifact_type == "topic_report":
         if payload.get("research_mode") not in {"trial_diversification", "focused", "trend_window"}:
             errors.append("topic_report.research_mode 无效")
@@ -1162,6 +1924,12 @@ def validate_artifact(artifact: dict[str, Any]) -> list[str]:
                     errors.append(f"candidate {candidate.get('topic_id')} 引用未知 evidence_id：{ref}")
             if candidate.get("confidence") not in {"low", "medium", "high"}:
                 errors.append(f"candidate {candidate.get('topic_id')} confidence 无效")
+            if schema_version == SCHEMA_VERSION:
+                validate_positioning_trace(
+                    candidate.get("positioning_trace"),
+                    f"payload.candidates[{index}].positioning_trace",
+                    errors,
+                )
     elif artifact_type == "content":
         if payload.get("content_objective") not in CONTENT_OBJECTIVES:
             errors.append("content.content_objective 无效")
@@ -1175,6 +1943,10 @@ def validate_artifact(artifact: dict[str, Any]) -> list[str]:
             errors.append("图文内容必须包含 cards")
         if content_format == "video" and not payload.get("shots"):
             errors.append("视频内容必须包含 shots")
+        if schema_version == SCHEMA_VERSION:
+            validate_positioning_trace(
+                payload.get("positioning_trace"), "payload.positioning_trace", errors
+            )
         claim_ids: set[str] = set()
         for index, claim in enumerate(require_list(payload.get("claims"), "payload.claims", errors)):
             if not isinstance(claim, dict):
@@ -1214,6 +1986,40 @@ def validate_artifact(artifact: dict[str, Any]) -> list[str]:
             if asset.get("rights_basis") == "generated":
                 if not asset.get("generation_job_id") or not asset.get("generator_capability_id"):
                     errors.append(f"assets[{index}] 生成素材必须记录 generation_job_id 和 generator_capability_id")
+        authorship = payload.get("authorship")
+        if authorship is not None:
+            authorship = require_object(authorship, "payload.authorship", errors)
+            if authorship.get("actor_type") not in {"agent", "human"}:
+                errors.append("payload.authorship.actor_type 无效")
+            if not isinstance(authorship.get("actor_id"), str) or not authorship.get("actor_id", "").strip():
+                errors.append("payload.authorship.actor_id 必须是非空字符串")
+            if authorship.get("actor_type") == "agent" and (
+                not isinstance(authorship.get("context_id"), str)
+                or not authorship.get("context_id", "").strip()
+            ):
+                errors.append("Agent 作者必须记录 payload.authorship.context_id")
+            if authorship.get("model_id") is not None and (
+                not isinstance(authorship.get("model_id"), str)
+                or not authorship.get("model_id", "").strip()
+            ):
+                errors.append("payload.authorship.model_id 必须是非空字符串或 null")
+        audit_ref = payload.get("article_audit_ref")
+        if audit_ref is not None:
+            audit_ref = require_object(audit_ref, "payload.article_audit_ref", errors)
+            for field in ("artifact_id", "artifact_path", "payload_sha256", "content_sha256"):
+                if field not in audit_ref:
+                    errors.append(f"payload.article_audit_ref 缺少 {field}")
+            if not isinstance(audit_ref.get("artifact_id"), str) or not audit_ref.get("artifact_id", "").startswith("article_audit_"):
+                errors.append("payload.article_audit_ref.artifact_id 无效")
+            for field in ("payload_sha256", "content_sha256"):
+                value = audit_ref.get(field)
+                if not isinstance(value, str) or not SHA_RE.fullmatch(value):
+                    errors.append(f"payload.article_audit_ref.{field} 无效")
+    elif artifact_type == "article_audit":
+        try:
+            errors.extend(article_audit_contract().validate_audit_document(artifact))
+        except (WorkflowError, OSError) as exc:
+            errors.append(str(exc))
     elif artifact_type == "inventory_item":
         state = payload.get("state")
         if state not in INVENTORY_STATES:
@@ -1446,8 +2252,177 @@ def validate_artifact(artifact: dict[str, Any]) -> list[str]:
             errors.append("persona_validation.persona_mode 无效")
         if not isinstance(persona_validation.get("revision_recommended"), bool):
             errors.append("persona_validation.revision_recommended 必须是 boolean")
-        require_list(persona_validation.get("hypothesis_results"), "persona_validation.hypothesis_results", errors)
+        hypothesis_results = require_list(
+            persona_validation.get("hypothesis_results"),
+            "persona_validation.hypothesis_results",
+            errors,
+        )
         require_list(persona_validation.get("evidence_refs"), "persona_validation.evidence_refs", errors)
+        if schema_version == SCHEMA_VERSION:
+            require_nonempty_text(
+                payload.get("persona_artifact_id"), "payload.persona_artifact_id", errors
+            )
+            proposed_mode = persona_validation.get("proposed_mode")
+            if proposed_mode not in {"assumed", "validated"}:
+                errors.append("persona_validation.proposed_mode 无效")
+            require_nonempty_text(
+                persona_validation.get("scope"), "persona_validation.scope", errors
+            )
+            result_ids: set[str] = set()
+            top_snapshot_ids = set(snapshots)
+            for index, result in enumerate(hypothesis_results):
+                if not isinstance(result, dict):
+                    errors.append(f"persona_validation.hypothesis_results[{index}] 必须是 object")
+                    continue
+                hypothesis_id = require_nonempty_text(
+                    result.get("hypothesis_id"),
+                    f"persona_validation.hypothesis_results[{index}].hypothesis_id",
+                    errors,
+                )
+                if hypothesis_id:
+                    if hypothesis_id in result_ids:
+                        errors.append(
+                            f"persona_validation.hypothesis_results[{index}].hypothesis_id 重复"
+                        )
+                    result_ids.add(hypothesis_id)
+                verdict = result.get("verdict")
+                if verdict not in POSITIONING_RESULT_VERDICTS:
+                    errors.append(f"persona_validation.hypothesis_results[{index}].verdict 无效")
+                content_ids = require_nonempty_string_list(
+                    result.get("content_artifact_ids"),
+                    f"persona_validation.hypothesis_results[{index}].content_artifact_ids",
+                    errors,
+                )
+                if payload.get("content_artifact_id") not in content_ids:
+                    errors.append(
+                        f"persona_validation.hypothesis_results[{index}] 必须引用本次复盘内容"
+                    )
+                result_snapshot_ids = require_nonempty_string_list(
+                    result.get("snapshot_artifact_ids"),
+                    f"persona_validation.hypothesis_results[{index}].snapshot_artifact_ids",
+                    errors,
+                )
+                unknown_snapshots = sorted(set(result_snapshot_ids) - top_snapshot_ids)
+                if unknown_snapshots:
+                    errors.append(
+                        f"persona_validation.hypothesis_results[{index}] 引用了本复盘之外的数据快照："
+                        + ", ".join(unknown_snapshots)
+                    )
+                result_evidence = require_nonempty_string_list(
+                    result.get("evidence_refs"),
+                    f"persona_validation.hypothesis_results[{index}].evidence_refs",
+                    errors,
+                )
+                require_nonempty_string_list(
+                    result.get("counter_evidence_refs"),
+                    f"persona_validation.hypothesis_results[{index}].counter_evidence_refs",
+                    errors,
+                )
+                require_nonempty_string_list(
+                    result.get("alternative_explanations"),
+                    f"persona_validation.hypothesis_results[{index}].alternative_explanations",
+                    errors,
+                )
+                delivery = result.get("delivery_fidelity")
+                exposure = result.get("qualified_exposure")
+                if delivery not in {"met", "partial", "not_met", "unknown"}:
+                    errors.append(
+                        f"persona_validation.hypothesis_results[{index}].delivery_fidelity 无效"
+                    )
+                if exposure not in {"sufficient", "insufficient", "unknown"}:
+                    errors.append(
+                        f"persona_validation.hypothesis_results[{index}].qualified_exposure 无效"
+                    )
+                if result.get("confidence") not in {"low", "medium", "high"}:
+                    errors.append(f"persona_validation.hypothesis_results[{index}].confidence 无效")
+                require_nonempty_text(
+                    result.get("scope"),
+                    f"persona_validation.hypothesis_results[{index}].scope",
+                    errors,
+                )
+                if verdict in {"supported", "refuted"} and not result_evidence:
+                    errors.append(
+                        f"persona_validation.hypothesis_results[{index}] 得出方向性结论时必须有证据"
+                    )
+                if verdict in {"supported", "refuted"} and (
+                    delivery != "met" or exposure != "sufficient"
+                ):
+                    errors.append(
+                        f"persona_validation.hypothesis_results[{index}] 内容兑现或有效曝光不足时只能无结论"
+                    )
+
+            streams = require_list(
+                payload.get("positioning_evidence_streams"),
+                "payload.positioning_evidence_streams",
+                errors,
+            )
+            seen_streams: set[str] = set()
+            for index, stream in enumerate(streams):
+                if not isinstance(stream, dict):
+                    errors.append(f"positioning_evidence_streams[{index}] 必须是 object")
+                    continue
+                stream_name = stream.get("stream")
+                if stream_name not in POSITIONING_EVIDENCE_STREAMS:
+                    errors.append(f"positioning_evidence_streams[{index}].stream 无效")
+                elif stream_name in seen_streams:
+                    errors.append(f"positioning_evidence_streams[{index}].stream 重复")
+                else:
+                    seen_streams.add(stream_name)
+                if stream.get("status") not in {
+                    "supportive",
+                    "concerning",
+                    "neutral",
+                    "missing",
+                    "not_applicable",
+                }:
+                    errors.append(f"positioning_evidence_streams[{index}].status 无效")
+                require_nonempty_text(
+                    stream.get("observation"),
+                    f"positioning_evidence_streams[{index}].observation",
+                    errors,
+                )
+                require_nonempty_string_list(
+                    stream.get("evidence_refs"),
+                    f"positioning_evidence_streams[{index}].evidence_refs",
+                    errors,
+                )
+                require_nonempty_string_list(
+                    stream.get("limitations"),
+                    f"positioning_evidence_streams[{index}].limitations",
+                    errors,
+                )
+            missing_streams = sorted(POSITIONING_EVIDENCE_STREAMS - seen_streams)
+            if missing_streams:
+                errors.append(
+                    "positioning_evidence_streams 必须显式记录全部证据流，缺少："
+                    + ", ".join(missing_streams)
+                )
+
+            for index, mirror in enumerate(
+                require_list(payload.get("market_mirror"), "payload.market_mirror", errors)
+            ):
+                if not isinstance(mirror, dict):
+                    errors.append(f"market_mirror[{index}] 必须是 object")
+                    continue
+                if mirror.get("signal_type") not in {
+                    "recall",
+                    "follow_reason",
+                    "qualified_demand",
+                    "wrong_expectation",
+                    "nonresponse",
+                }:
+                    errors.append(f"market_mirror[{index}].signal_type 无效")
+                require_nonempty_text(
+                    mirror.get("observation"), f"market_mirror[{index}].observation", errors
+                )
+                language = mirror.get("audience_language")
+                if language is not None and (not isinstance(language, str) or not language.strip()):
+                    errors.append(f"market_mirror[{index}].audience_language 必须是非空字符串或 null")
+                require_nonempty_string_list(
+                    mirror.get("evidence_refs"), f"market_mirror[{index}].evidence_refs", errors
+                )
+                if mirror.get("confidence") not in {"low", "medium", "high"}:
+                    errors.append(f"market_mirror[{index}].confidence 无效")
         require_list(payload.get("trust_observations"), "payload.trust_observations", errors)
         require_list(payload.get("long_tail_observations"), "payload.long_tail_observations", errors)
     elif artifact_type == "experiment":
@@ -1458,9 +2433,85 @@ def validate_artifact(artifact: dict[str, Any]) -> list[str]:
             errors.append("positioning 实验必须包含 persona_change_proposal")
         if intervention == "strategy" and not payload.get("strategy_change_proposal"):
             errors.append("strategy 实验必须包含 strategy_change_proposal")
-        for field in ("hypothesis", "independent_variable", "control", "observation_window", "sample_size_plan", "stop_rule"):
+        for field in ("hypothesis", "observation_window", "sample_size_plan", "stop_rule"):
             if not isinstance(payload.get(field), str) or not payload.get(field).strip():
                 errors.append(f"experiment.{field} 不能为空")
+        if schema_version == SCHEMA_VERSION:
+            mode = payload.get("experiment_mode")
+            if mode not in {"exploration_probe", "controlled_optimization"}:
+                errors.append("experiment.experiment_mode 无效")
+            hypothesis_refs = require_nonempty_string_list(
+                payload.get("hypothesis_refs"), "experiment.hypothesis_refs", errors
+            )
+            if intervention == "positioning" and not hypothesis_refs:
+                errors.append("定位实验至少需要关联一个 persona 假设")
+            diversity = require_nonempty_string_list(
+                payload.get("diversity_dimensions"), "experiment.diversity_dimensions", errors
+            )
+            if mode == "exploration_probe":
+                require_nonempty_text(
+                    payload.get("probe_question"), "experiment.probe_question", errors
+                )
+                if not diversity:
+                    errors.append("探索实验至少需要一个差异维度")
+            if mode == "controlled_optimization":
+                for field in ("independent_variable", "control"):
+                    require_nonempty_text(payload.get(field), f"experiment.{field}", errors)
+            evidence_plan = require_object(
+                payload.get("evidence_plan"), "experiment.evidence_plan", errors
+            )
+            evidence_streams = require_nonempty_string_list(
+                evidence_plan.get("required_evidence_streams"),
+                "experiment.evidence_plan.required_evidence_streams",
+                errors,
+            )
+            if not evidence_streams:
+                errors.append("experiment.evidence_plan 至少需要一个证据流")
+            unknown_streams = sorted(set(evidence_streams) - POSITIONING_EVIDENCE_STREAMS)
+            if unknown_streams:
+                errors.append("experiment.evidence_plan 包含未知证据流：" + ", ".join(unknown_streams))
+            for field in ("qualified_exposure_rule", "delivery_fidelity_rule"):
+                require_nonempty_text(
+                    evidence_plan.get(field), f"experiment.evidence_plan.{field}", errors
+                )
+            proposal = payload.get("persona_change_proposal")
+            if proposal is not None:
+                proposal = require_object(proposal, "experiment.persona_change_proposal", errors)
+                target_ids = require_nonempty_string_list(
+                    proposal.get("target_hypothesis_ids"),
+                    "experiment.persona_change_proposal.target_hypothesis_ids",
+                    errors,
+                )
+                if not target_ids:
+                    errors.append("persona_change_proposal 至少需要一个目标假设")
+                if proposal.get("action") not in {"keep", "revise", "retire", "reopen"}:
+                    errors.append("persona_change_proposal.action 无效")
+                require_nonempty_text(
+                    proposal.get("rationale"), "persona_change_proposal.rationale", errors
+                )
+                proposal_evidence = require_nonempty_string_list(
+                    proposal.get("evidence_refs"),
+                    "persona_change_proposal.evidence_refs",
+                    errors,
+                )
+                if not proposal_evidence:
+                    errors.append("persona_change_proposal 必须引用复盘证据")
+                require_nonempty_string_list(
+                    proposal.get("counter_evidence_refs"),
+                    "persona_change_proposal.counter_evidence_refs",
+                    errors,
+                )
+                if proposal.get("requires_new_persona_revision") is not True:
+                    errors.append("persona_change_proposal 必须要求新建 persona revision")
+                require_nonempty_string_list(
+                    proposal.get("migration_actions"),
+                    "persona_change_proposal.migration_actions",
+                    errors,
+                )
+        else:
+            for field in ("independent_variable", "control"):
+                if not isinstance(payload.get(field), str) or not payload.get(field).strip():
+                    errors.append(f"experiment.{field} 不能为空")
 
     errors.extend(optional_json_schema_errors(artifact))
     return errors
@@ -1473,6 +2524,524 @@ def find_workspace(start: Path) -> Path:
         if (candidate / "workspace.json").is_file():
             return candidate
     raise WorkflowError(f"无法从 {start} 定位 workspace.json")
+
+
+def workspace_relative_path(root: Path, raw_path: str, field: str) -> Path:
+    candidate = Path(raw_path)
+    path = (candidate if candidate.is_absolute() else root / candidate).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise WorkflowError(f"{field} 越出当前工作区") from exc
+    return path
+
+
+def load_account_artifact(
+    root: Path,
+    account_id: str,
+    artifact_type: str,
+    artifact_id: Any,
+) -> tuple[dict[str, Any], Path]:
+    if not isinstance(artifact_id, str) or not ID_RE.fullmatch(artifact_id):
+        raise WorkflowError(f"{artifact_type} 引用不是有效 artifact_id：{artifact_id}")
+    path = root / "artifacts" / account_id / artifact_type / f"{artifact_id}.json"
+    artifact = load_json(path)
+    if artifact.get("artifact_type") != artifact_type or artifact.get("artifact_id") != artifact_id:
+        raise WorkflowError(f"{artifact_id} 未解析到正确的 {artifact_type}")
+    if artifact.get("account_id") != account_id:
+        raise WorkflowError(f"{artifact_id} 不属于当前账号")
+    artifact_errors = validate_artifact(artifact)
+    if artifact_errors:
+        raise WorkflowError(f"{artifact_id} 未通过校验：" + "; ".join(artifact_errors))
+    return artifact, path
+
+
+def positioning_trace_errors(
+    trace: Any,
+    persona: dict[str, Any],
+    field: str,
+) -> list[str]:
+    errors: list[str] = []
+    trace = validate_positioning_trace(trace, field, errors)
+    payload = persona.get("payload", {})
+    if persona.get("schema_version") != SCHEMA_VERSION:
+        errors.append(f"{field} 必须关联当前 Schema 的定位记录")
+        return errors
+    if trace.get("persona_revision") != payload.get("revision"):
+        errors.append(f"{field}.persona_revision 与关联定位版本不一致")
+    audience_ids = {
+        item.get("segment_id")
+        for item in payload.get("audience", [])
+        if isinstance(item, dict)
+    }
+    hypothesis_by_id = {
+        item.get("hypothesis_id"): item
+        for item in payload.get("hypotheses", [])
+        if isinstance(item, dict) and isinstance(item.get("hypothesis_id"), str)
+    }
+    unknown_audiences = sorted(set(trace.get("audience_segment_refs", [])) - audience_ids)
+    if unknown_audiences:
+        errors.append(f"{field} 引用了不存在的受众分组：" + ", ".join(unknown_audiences))
+    unknown_hypotheses = sorted(set(trace.get("hypothesis_refs", [])) - set(hypothesis_by_id))
+    if unknown_hypotheses:
+        errors.append(f"{field} 引用了不存在的定位假设：" + ", ".join(unknown_hypotheses))
+    retired = sorted(
+        hypothesis_id
+        for hypothesis_id in trace.get("hypothesis_refs", [])
+        if hypothesis_by_id.get(hypothesis_id, {}).get("status") == "refuted"
+    )
+    if retired:
+        errors.append(f"{field} 不得继续把已反驳假设作为内容目标：" + ", ".join(retired))
+    pillar = next(
+        (
+            item
+            for item in payload.get("content_pillars", [])
+            if isinstance(item, dict) and item.get("pillar_id") == trace.get("pillar_id")
+        ),
+        None,
+    )
+    if not isinstance(pillar, dict):
+        errors.append(f"{field}.pillar_id 未解析到定位中的内容支柱")
+        return errors
+    if not set(trace.get("audience_segment_refs", [])).issubset(
+        set(pillar.get("audience_segment_refs", []))
+    ):
+        errors.append(f"{field} 的受众不属于所选内容支柱")
+    if not set(trace.get("hypothesis_refs", [])).issubset(set(pillar.get("hypothesis_refs", []))):
+        errors.append(f"{field} 的假设不属于所选内容支柱")
+    for name in ("audience_job", "value_delivered", "proof_role", "memory_asset"):
+        if trace.get(name) != pillar.get(name):
+            errors.append(f"{field}.{name} 与所选内容支柱不一致")
+    return errors
+
+
+def require_topic_positioning_links(root: Path, topic_report: dict[str, Any]) -> None:
+    payload = topic_report.get("payload", {})
+    persona, _ = load_account_artifact(
+        root,
+        topic_report["account_id"],
+        "persona",
+        payload.get("persona_artifact_id"),
+    )
+    if not effective_approval(persona, "G1"):
+        raise WorkflowError("G2 前需要关联当前有效的账号定位确认")
+    if persona.get("payload", {}).get("strategy_artifact_id") != payload.get("strategy_artifact_id"):
+        raise WorkflowError("选题报告与定位引用的账号战略不一致")
+    link_errors: list[str] = []
+    for index, candidate in enumerate(payload.get("candidates", [])):
+        link_errors.extend(
+            positioning_trace_errors(
+                candidate.get("positioning_trace") if isinstance(candidate, dict) else None,
+                persona,
+                f"candidates[{index}].positioning_trace",
+            )
+        )
+    if link_errors:
+        raise WorkflowError("选题定位追踪未闭合：" + "; ".join(link_errors))
+
+
+def require_content_positioning_links(root: Path, content: dict[str, Any]) -> None:
+    payload = content.get("payload", {})
+    persona, _ = load_account_artifact(
+        root,
+        content["account_id"],
+        "persona",
+        payload.get("persona_artifact_id"),
+    )
+    if not effective_approval(persona, "G1"):
+        raise WorkflowError("G3 前需要关联当前有效的账号定位确认")
+    link_errors = positioning_trace_errors(
+        payload.get("positioning_trace"), persona, "content.positioning_trace"
+    )
+    if link_errors:
+        raise WorkflowError("内容定位追踪未闭合：" + "; ".join(link_errors))
+    topic_report, _ = load_account_artifact(
+        root,
+        content["account_id"],
+        "topic_report",
+        payload.get("topic_report_artifact_id"),
+    )
+    if not effective_approval(topic_report, "G2"):
+        raise WorkflowError("G3 前需要关联当前有效的选题确认")
+    topic_payload = topic_report.get("payload", {})
+    if topic_payload.get("persona_artifact_id") != payload.get("persona_artifact_id"):
+        raise WorkflowError("内容与选题报告引用的定位版本不一致")
+    if topic_payload.get("strategy_artifact_id") != payload.get("strategy_artifact_id"):
+        raise WorkflowError("内容与选题报告引用的账号战略不一致")
+    candidate = next(
+        (
+            item
+            for item in topic_payload.get("candidates", [])
+            if isinstance(item, dict) and item.get("topic_id") == payload.get("topic_id")
+        ),
+        None,
+    )
+    if not isinstance(candidate, dict) or payload.get("topic_id") not in topic_payload.get(
+        "selected_topic_ids", []
+    ):
+        raise WorkflowError("内容 topic_id 未解析到已确认的选题")
+    if candidate.get("positioning_trace") != payload.get("positioning_trace"):
+        raise WorkflowError("内容定位追踪必须与已确认选题保持一致；变化时应先修订选题")
+
+
+def require_review_positioning_links(root: Path, review: dict[str, Any]) -> None:
+    payload = review.get("payload", {})
+    persona, _ = load_account_artifact(
+        root,
+        review["account_id"],
+        "persona",
+        payload.get("persona_artifact_id"),
+    )
+    content, _ = load_account_artifact(
+        root,
+        review["account_id"],
+        "content",
+        payload.get("content_artifact_id"),
+    )
+    if content.get("payload", {}).get("persona_artifact_id") != persona.get("artifact_id"):
+        raise WorkflowError("复盘、内容与账号定位引用不一致")
+    persona_validation = payload.get("persona_validation", {})
+    if persona_validation.get("persona_mode") != persona.get("payload", {}).get("mode"):
+        raise WorkflowError("复盘记录的当前定位状态与关联 persona 不一致")
+    traced_ids = set(content.get("payload", {}).get("positioning_trace", {}).get("hypothesis_refs", []))
+    result_ids = {
+        item.get("hypothesis_id")
+        for item in persona_validation.get("hypothesis_results", [])
+        if isinstance(item, dict)
+    }
+    if traced_ids != result_ids:
+        missing = sorted(traced_ids - result_ids)
+        extra = sorted(result_ids - traced_ids)
+        details = []
+        if missing:
+            details.append("缺少结果：" + ", ".join(missing))
+        if extra:
+            details.append("出现未测试结果：" + ", ".join(extra))
+        raise WorkflowError("复盘必须逐项回应内容绑定的定位假设；" + "；".join(details))
+    for snapshot_id in payload.get("snapshot_artifact_ids", []):
+        snapshot, _ = load_account_artifact(
+            root, review["account_id"], "metrics_snapshot", snapshot_id
+        )
+        if snapshot.get("status") != "ready":
+            raise WorkflowError(f"复盘引用的数据快照尚未 ready：{snapshot_id}")
+        if snapshot.get("payload", {}).get("content_artifact_id") != content.get("artifact_id"):
+            raise WorkflowError(f"数据快照不属于本次复盘内容：{snapshot_id}")
+
+
+def require_stable_persona_evidence(root: Path, persona: dict[str, Any]) -> None:
+    payload = persona.get("payload", {})
+    strategy, _ = load_account_artifact(
+        root,
+        persona["account_id"],
+        "account_strategy",
+        payload.get("strategy_artifact_id"),
+    )
+    if not effective_approval(strategy, "G1"):
+        raise WorkflowError("稳定定位批准前需要当前有效的账号战略确认")
+    if strategy.get("payload", {}).get("persona_mode") != "validated":
+        raise WorkflowError("稳定定位批准前，关联账号战略必须明确 persona_mode=validated")
+    predecessor_id = payload.get("supersedes_artifact_id")
+    predecessor, _ = load_account_artifact(
+        root, persona["account_id"], "persona", predecessor_id
+    )
+    if not effective_approval(predecessor, "G1"):
+        raise WorkflowError("稳定定位必须引用一份当前有效、已经确认的上一版本定位")
+    predecessor_hypotheses = {
+        item.get("hypothesis_id"): item
+        for item in predecessor.get("payload", {}).get("hypotheses", [])
+        if isinstance(item, dict)
+    }
+    established = {
+        item.get("hypothesis_id"): item
+        for item in payload.get("hypotheses", [])
+        if isinstance(item, dict) and item.get("status") == "provisionally_established"
+    }
+    for hypothesis_id, item in established.items():
+        previous = predecessor_hypotheses.get(hypothesis_id)
+        if not isinstance(previous, dict) or previous.get("statement") != item.get("statement"):
+            raise WorkflowError(
+                f"阶段性成立的假设 {hypothesis_id} 必须能追溯到上一版本的同一陈述"
+            )
+
+    evidence = payload.get("validation_evidence", {})
+    supported_ids: set[str] = set()
+    supported_content_ids: set[str] = set()
+    supported_snapshot_ids: set[str] = set()
+    actual_streams: set[str] = set()
+    supportive_streams: set[str] = set()
+    market_mirror_count = 0
+    for review_id in evidence.get("review_artifact_refs", []):
+        review, _ = load_account_artifact(
+            root, persona["account_id"], "review", review_id
+        )
+        if review.get("status") != "ready":
+            raise WorkflowError(f"稳定定位引用的复盘尚未 ready：{review_id}")
+        require_review_positioning_links(root, review)
+        review_payload = review.get("payload", {})
+        if review_payload.get("persona_artifact_id") != predecessor_id:
+            raise WorkflowError(f"复盘 {review_id} 没有评估被替代的定位版本")
+        for stream in review_payload.get("positioning_evidence_streams", []):
+            if isinstance(stream, dict) and stream.get("status") not in {"missing", "not_applicable"}:
+                actual_streams.add(stream.get("stream"))
+                if stream.get("status") == "supportive":
+                    supportive_streams.add(stream.get("stream"))
+        market_mirror_count += len(review_payload.get("market_mirror", []))
+        for result in review_payload.get("persona_validation", {}).get("hypothesis_results", []):
+            if not isinstance(result, dict):
+                continue
+            if (
+                result.get("verdict") == "supported"
+                and result.get("delivery_fidelity") == "met"
+                and result.get("qualified_exposure") == "sufficient"
+            ):
+                supported_ids.add(result.get("hypothesis_id"))
+                supported_content_ids.update(result.get("content_artifact_ids", []))
+                supported_snapshot_ids.update(result.get("snapshot_artifact_ids", []))
+    missing_hypotheses = sorted(set(established) - supported_ids)
+    if missing_hypotheses:
+        raise WorkflowError("稳定定位缺少合格复盘支持的假设：" + ", ".join(missing_hypotheses))
+    declared_content_ids = set(evidence.get("content_artifact_refs", []))
+    if not declared_content_ids.issubset(supported_content_ids):
+        raise WorkflowError("validation_evidence.content_artifact_refs 含未被支持性结果引用的内容")
+    declared_snapshot_ids = set(evidence.get("snapshot_artifact_refs", []))
+    if not declared_snapshot_ids.issubset(supported_snapshot_ids):
+        raise WorkflowError("validation_evidence.snapshot_artifact_refs 含未被支持性结果引用的数据快照")
+    missing_actual_streams = sorted(REQUIRED_STABLE_EVIDENCE_STREAMS - actual_streams)
+    if missing_actual_streams:
+        raise WorkflowError("实际复盘仍缺少稳定定位证据流：" + ", ".join(missing_actual_streams))
+    missing_supportive_streams = sorted(
+        {"audience_resonance", "delivery_fidelity", "creator_fit"} - supportive_streams
+    )
+    if missing_supportive_streams:
+        raise WorkflowError("稳定定位缺少正向证据流：" + ", ".join(missing_supportive_streams))
+    if market_mirror_count == 0:
+        raise WorkflowError("稳定定位前至少需要一条受众市场镜像，不能只依赖平台指标")
+    if not set(evidence.get("evidence_streams_covered", [])).issubset(actual_streams):
+        raise WorkflowError("validation_evidence 声明了复盘中并未实际覆盖的证据流")
+    for content_id in declared_content_ids:
+        linked_content, content_path = load_account_artifact(
+            root, persona["account_id"], "content", content_id
+        )
+        if not effective_content_approval(linked_content, content_path):
+            raise WorkflowError(f"稳定定位引用的内容缺少有效定稿确认：{content_id}")
+    for snapshot_id in declared_snapshot_ids:
+        snapshot, _ = load_account_artifact(
+            root, persona["account_id"], "metrics_snapshot", snapshot_id
+        )
+        if snapshot.get("status") != "ready":
+            raise WorkflowError(f"稳定定位引用的数据快照尚未 ready：{snapshot_id}")
+
+
+def require_experiment_positioning_links(root: Path, experiment: dict[str, Any]) -> None:
+    payload = experiment.get("payload", {})
+    review, _ = load_account_artifact(
+        root,
+        experiment["account_id"],
+        "review",
+        payload.get("review_artifact_id"),
+    )
+    if review.get("status") != "ready":
+        raise WorkflowError("G6 前关联复盘必须是 ready")
+    result_ids = {
+        item.get("hypothesis_id")
+        for item in review.get("payload", {}).get("persona_validation", {}).get(
+            "hypothesis_results", []
+        )
+        if isinstance(item, dict)
+    }
+    hypothesis_refs = set(payload.get("hypothesis_refs", []))
+    unknown = sorted(hypothesis_refs - result_ids)
+    if unknown:
+        raise WorkflowError("实验引用了复盘未评估的定位假设：" + ", ".join(unknown))
+    proposal = payload.get("persona_change_proposal")
+    if isinstance(proposal, dict):
+        proposal_targets = set(proposal.get("target_hypothesis_ids", []))
+        if not proposal_targets.issubset(hypothesis_refs):
+            raise WorkflowError("定位修订建议只能作用于本实验关联的定位假设")
+
+
+def strategy_lineage_contains(
+    root: Path,
+    account_id: str,
+    current_strategy: dict[str, Any],
+    ancestor_id: str,
+) -> bool:
+    """Return whether current_strategy is ancestor_id or descends from it."""
+    cursor = current_strategy
+    seen: set[str] = set()
+    while isinstance(cursor, dict):
+        cursor_id = cursor.get("artifact_id")
+        if cursor_id == ancestor_id:
+            return True
+        if not isinstance(cursor_id, str) or cursor_id in seen:
+            raise WorkflowError("账号战略版本谱系存在循环或无效编号")
+        seen.add(cursor_id)
+        parent_id = cursor.get("payload", {}).get("supersedes_artifact_id")
+        if not isinstance(parent_id, str) or not parent_id:
+            return False
+        cursor, _ = load_account_artifact(
+            root, account_id, "account_strategy", parent_id
+        )
+    return False
+
+
+def require_persona_revision_lineage(root: Path, persona: dict[str, Any]) -> None:
+    """Prevent a current-schema persona revision from bypassing strategy or evidence lineage."""
+    payload = persona.get("payload", {})
+    revision = payload.get("revision")
+    predecessor_id = payload.get("supersedes_artifact_id")
+    diagnosis = payload.get("positioning_diagnosis", {})
+    evidence = payload.get("validation_evidence", {})
+    experiment_refs = evidence.get("experiment_artifact_refs", [])
+
+    if revision == 1:
+        if predecessor_id is not None:
+            raise WorkflowError("首版定位不得声明 supersedes_artifact_id")
+        if diagnosis.get("diagnosis_type") != "initial_definition":
+            raise WorkflowError("首版定位必须明确记录为首次建立")
+        if experiment_refs:
+            raise WorkflowError("首版定位没有上一版，不得声明承接定位修订实验")
+        return
+
+    if not isinstance(revision, int) or revision < 2 or not isinstance(predecessor_id, str):
+        raise WorkflowError("非首版定位必须使用新 revision 并回指上一版")
+    predecessor, _ = load_account_artifact(
+        root, persona["account_id"], "persona", predecessor_id
+    )
+    if not effective_approval(predecessor, "G1"):
+        raise WorkflowError("定位修订必须回指当前有效、已确认的上一版定位")
+    predecessor_revision = predecessor.get("payload", {}).get("revision")
+    if not isinstance(predecessor_revision, int) or revision != predecessor_revision + 1:
+        raise WorkflowError("定位 revision 必须在上一版基础上连续递增")
+    if diagnosis.get("diagnosis_type") == "initial_definition":
+        raise WorkflowError("非首版定位不得再标记为首次建立")
+
+    strategy, _ = load_account_artifact(
+        root,
+        persona["account_id"],
+        "account_strategy",
+        payload.get("strategy_artifact_id"),
+    )
+    predecessor_strategy_id = predecessor.get("payload", {}).get("strategy_artifact_id")
+    if not isinstance(predecessor_strategy_id, str) or not strategy_lineage_contains(
+        root, persona["account_id"], strategy, predecessor_strategy_id
+    ):
+        raise WorkflowError("新定位引用的账号战略不在上一版战略的版本谱系中")
+    strategy_changed = strategy.get("artifact_id") != predecessor_strategy_id
+
+    review_refs = evidence.get("review_artifact_refs", [])
+    if not strategy_changed and not review_refs:
+        raise WorkflowError("同一账号战略下修订定位，至少需要一份评估上一版定位的真实复盘")
+
+    declared_review_ids = set(review_refs)
+    for review_id in review_refs:
+        review, _ = load_account_artifact(
+            root, persona["account_id"], "review", review_id
+        )
+        if review.get("status") != "ready":
+            raise WorkflowError(f"定位修订引用的复盘尚未 ready：{review_id}")
+        require_review_positioning_links(root, review)
+        if review.get("payload", {}).get("persona_artifact_id") != predecessor_id:
+            raise WorkflowError(f"复盘 {review_id} 没有评估被替代的定位版本")
+
+    for experiment_id in experiment_refs:
+        experiment, _ = load_account_artifact(
+            root, persona["account_id"], "experiment", experiment_id
+        )
+        if not effective_approval(experiment, "G6"):
+            raise WorkflowError(f"定位修订引用的实验缺少当前有效 G6：{experiment_id}")
+        require_experiment_positioning_links(root, experiment)
+        linked_review_id = experiment.get("payload", {}).get("review_artifact_id")
+        if linked_review_id not in declared_review_ids:
+            raise WorkflowError(
+                f"实验 {experiment_id} 的关联复盘未列入 validation_evidence.review_artifact_refs"
+            )
+
+
+def require_independent_review_capability(root: Path, content: dict[str, Any]) -> None:
+    run_id = content.get("run_id")
+    run = load_json(root / "runs" / str(run_id) / "run.json")
+    capability = (
+        run.get("payload", {})
+        .get("runtime_capabilities", {})
+        .get("capabilities", {})
+        .get("independent_agent_review", {})
+    )
+    if capability.get("status") != "available" or not capability.get("capability_id"):
+        raise WorkflowError(
+            "本轮尚未确认可启动独立上下文的文章审计 Agent，不能进入独立审计或内容定稿"
+        )
+
+
+def load_linked_article_audit(
+    content: dict[str, Any],
+    content_path: Path,
+) -> tuple[dict[str, Any], Path]:
+    root = find_workspace(content_path)
+    ref = content.get("payload", {}).get("article_audit_ref")
+    if not isinstance(ref, dict):
+        raise WorkflowError("content 尚未绑定独立文章审计")
+    raw_audit_path = ref.get("artifact_path")
+    if not isinstance(raw_audit_path, str) or not raw_audit_path:
+        raise WorkflowError("content.article_audit_ref 缺少审计记录位置")
+    audit_path = workspace_relative_path(root, raw_audit_path, "独立审计记录位置")
+    audit = load_json(audit_path)
+    if audit.get("artifact_type") != "article_audit":
+        raise WorkflowError("content.article_audit_ref 未指向 article_audit artifact")
+    if audit.get("artifact_id") != ref.get("artifact_id"):
+        raise WorkflowError("content.article_audit_ref 的 artifact_id 与文件不一致")
+    if audit.get("account_id") != content.get("account_id") or audit.get("run_id") != content.get("run_id"):
+        raise WorkflowError("独立审计与 content 的 account_id/run_id 不一致")
+    audit_errors = validate_artifact(audit)
+    binding_errors = article_audit_contract().validate_audit_document(audit, content=content)
+    errors = audit_errors + [item for item in binding_errors if item not in audit_errors]
+    if errors:
+        raise WorkflowError("独立文章审计未通过校验：" + "; ".join(errors))
+    actual_audit_hash = article_audit_contract().audit_payload_hash(audit)
+    if ref.get("payload_sha256") != actual_audit_hash:
+        raise WorkflowError("独立审计 artifact 已在绑定后发生变化")
+    actual_content_hash = article_audit_contract().auditable_content_hash(content)
+    if ref.get("content_sha256") != actual_content_hash:
+        raise WorkflowError("content 已在独立审计后发生变化，必须重新审计")
+    try:
+        content_relative = str(content_path.resolve().relative_to(root))
+    except ValueError as exc:
+        raise WorkflowError("content 越出当前工作区") from exc
+    if audit.get("payload", {}).get("target_uri") != content_relative:
+        raise WorkflowError("独立审计记录的 target_uri 与当前 content 路径不一致")
+    return audit, audit_path
+
+
+def latest_effective_gate_approval(
+    artifact: dict[str, Any], gate: str
+) -> dict[str, Any] | None:
+    current_hash = payload_hash(artifact, gate)
+    approvals = artifact.get("approvals", [])
+    if not isinstance(approvals, list):
+        return None
+    for approval in reversed(approvals):
+        if not isinstance(approval, dict) or approval.get("gate") != gate:
+            continue
+        if approval.get("decision") != "approved":
+            return None
+        return approval if approval.get("payload_sha256") == current_hash else None
+    return None
+
+
+def effective_content_approval(content: dict[str, Any], content_path: Path) -> bool:
+    approval = latest_effective_gate_approval(content, "G3")
+    if approval is None:
+        return False
+    try:
+        audit, _ = load_linked_article_audit(content, content_path)
+    except WorkflowError:
+        return False
+    verdict = audit.get("payload", {}).get("summary", {}).get("verdict")
+    if verdict == "passed":
+        return True
+    if verdict == "human_decision_required":
+        return bool(str(approval.get("notes") or "").strip())
+    return False
 
 
 def append_audit(root: Path, event: dict[str, Any]) -> None:
@@ -1519,8 +3088,9 @@ def command_init(args: argparse.Namespace) -> None:
     workspace_path = root / "workspace.json"
     if workspace_path.exists():
         workspace = load_json(workspace_path)
-        if workspace.get("schema_version") != SCHEMA_VERSION:
+        if workspace.get("schema_version") not in SUPPORTED_SCHEMA_VERSIONS:
             raise WorkflowError("现有 workspace.json 版本不兼容")
+        workspace["schema_version"] = SCHEMA_VERSION
     else:
         workspace = {
             "schema_version": SCHEMA_VERSION,
@@ -1683,6 +3253,75 @@ def command_validate_workspace(args: argparse.Namespace) -> None:
     print(f"PASS: {len(files)} artifacts")
 
 
+def command_link_article_audit(args: argparse.Namespace) -> None:
+    content_path = Path(args.content).resolve()
+    audit_path = Path(args.audit).resolve()
+    content = load_json(content_path)
+    audit = load_json(audit_path)
+    if content.get("artifact_type") != "content":
+        raise WorkflowError("--content 必须指向 content artifact")
+    if audit.get("artifact_type") != "article_audit":
+        raise WorkflowError("--audit 必须指向 article_audit artifact")
+    if effective_approval(content, "G3"):
+        raise WorkflowError("当前 content 已具有有效 G3；请先由内容负责人撤销定稿确认")
+    content_errors = validate_artifact(content)
+    if content_errors:
+        raise WorkflowError("content 未通过校验：" + "; ".join(content_errors))
+    audit_errors = validate_artifact(audit)
+    if audit_errors:
+        raise WorkflowError("article_audit 未通过校验：" + "; ".join(audit_errors))
+    root = find_workspace(content_path)
+    audit_root = find_workspace(audit_path)
+    if audit_root != root:
+        raise WorkflowError("content 与 article_audit 必须位于同一工作区")
+    require_independent_review_capability(root, content)
+    try:
+        content_relative = str(content_path.relative_to(root))
+        audit_relative = str(audit_path.relative_to(root))
+    except ValueError as exc:
+        raise WorkflowError("content 与 article_audit 必须位于当前工作区") from exc
+    if audit.get("payload", {}).get("target_uri") != content_relative:
+        raise WorkflowError("article_audit.target_uri 与当前 content 路径不一致")
+    binding_errors = article_audit_contract().validate_audit_document(audit, content=content)
+    if binding_errors:
+        raise WorkflowError("article_audit 与 content 绑定校验失败：" + "; ".join(binding_errors))
+    content_hash = article_audit_contract().auditable_content_hash(content)
+    content["payload"]["article_audit_ref"] = {
+        "artifact_id": audit["artifact_id"],
+        "artifact_path": audit_relative,
+        "payload_sha256": article_audit_contract().audit_payload_hash(audit),
+        "content_sha256": content_hash,
+    }
+    before = content.get("status")
+    content["status"] = "review_required"
+    content["updated_at"] = now_iso()
+    linked_errors = validate_artifact(content)
+    if linked_errors:
+        raise WorkflowError("绑定审计后的 content 不合法：" + "; ".join(linked_errors))
+    run_path = root / "runs" / str(content.get("run_id")) / "run.json"
+    run = load_json(run_path)
+    run["payload"]["artifact_paths"]["article_audit"] = audit_relative
+    run["payload"]["gate_status"]["G3"] = "pending"
+    run["payload"]["current_stage"] = "content"
+    run["updated_at"] = now_iso()
+    run_errors = validate_artifact(run)
+    if run_errors:
+        raise WorkflowError("登记独立审计后的 run manifest 不合法：" + "; ".join(run_errors))
+    atomic_write_json(content_path, content)
+    atomic_write_json(run_path, run)
+    audit_event(
+        root,
+        content,
+        args.actor,
+        args.actor_type,
+        "article_audit_linked",
+        audit["artifact_id"],
+        before,
+        content["status"],
+    )
+    print(content_path)
+
+
 def command_approve(args: argparse.Namespace) -> None:
     path = Path(args.path).resolve()
     artifact = load_json(path)
@@ -1691,12 +3330,72 @@ def command_approve(args: argparse.Namespace) -> None:
         raise WorkflowError(f"{artifact_type} 不接受门禁 {args.gate}")
     if args.decision == "approved" and args.gate == "G2" and not artifact.get("payload", {}).get("selected_topic_ids"):
         raise WorkflowError("G2 批准前必须明确 selected_topic_ids")
+    if (
+        args.decision == "approved"
+        and args.gate == "G2"
+        and artifact.get("schema_version") == SCHEMA_VERSION
+    ):
+        require_topic_positioning_links(find_workspace(path), artifact)
     if args.decision == "approved" and args.gate == "G1" and artifact_type == "account_strategy":
         strategy_payload = artifact.get("payload", {})
         if not strategy_payload.get("stage_evidence"):
             raise WorkflowError("账号战略 G1 批准前至少需要一条 stage_evidence")
         if not strategy_payload.get("content_objectives"):
             raise WorkflowError("账号战略 G1 批准前至少需要一个 content_objective")
+        if artifact.get("schema_version") in DIRECTION_SCHEMA_VERSIONS:
+            direction = strategy_payload.get("creator_direction")
+            if not isinstance(direction, dict):
+                raise WorkflowError("账号战略 G1 批准前必须完成创作者方向")
+            for field in (
+                "primary_90_day_outcome",
+                "business_destination",
+                "audience_business_fit",
+                "current_value",
+                "future_value",
+                "relationship_posture",
+                "trust_engine",
+                "content_engine",
+            ):
+                if not isinstance(direction.get(field), str) or not direction[field].strip():
+                    raise WorkflowError(f"账号战略 G1 批准前必须填写 creator_direction.{field}")
+            memory_assets = direction.get("memory_assets")
+            if not isinstance(memory_assets, dict) or not isinstance(memory_assets.get("primary"), str) or not memory_assets["primary"].strip():
+                raise WorkflowError("账号战略 G1 批准前必须确定一个主记忆资产")
+            if not direction.get("evidence_refs"):
+                raise WorkflowError("账号战略 G1 批准前必须记录创作者方向的 evidence_refs")
+    if args.decision == "approved" and args.gate == "G1" and artifact_type == "persona":
+        root = find_workspace(path)
+        persona_payload = artifact.get("payload", {})
+        strategy, _ = load_account_artifact(
+            root,
+            artifact["account_id"],
+            "account_strategy",
+            persona_payload.get("strategy_artifact_id"),
+        )
+        if not effective_approval(strategy, "G1"):
+            raise WorkflowError("账号定位 G1 前需要当前有效的账号战略确认")
+        if strategy.get("payload", {}).get("persona_mode") != persona_payload.get("mode"):
+            raise WorkflowError("账号战略与账号定位的定位成熟度摘要不一致")
+        if artifact.get("schema_version") == SCHEMA_VERSION:
+            require_persona_revision_lineage(root, artifact)
+            if persona_payload.get("mode") == "validated":
+                require_stable_persona_evidence(root, artifact)
+    if args.decision == "approved" and args.gate == "G3":
+        content_payload = artifact.get("payload", {})
+        if not isinstance(content_payload.get("authorship"), dict):
+            raise WorkflowError("G3 批准前必须记录稿件作者身份")
+        root = find_workspace(path)
+        if artifact.get("schema_version") == SCHEMA_VERSION:
+            require_content_positioning_links(root, artifact)
+        require_independent_review_capability(root, artifact)
+        audit, _ = load_linked_article_audit(artifact, path)
+        verdict = audit.get("payload", {}).get("summary", {}).get("verdict")
+        if verdict == "audit_failed":
+            raise WorkflowError("独立文章审计未通过，不能批准 G3")
+        if verdict == "human_decision_required" and not str(args.notes or "").strip():
+            raise WorkflowError("独立审计存在待人工决定事项，G3 必须用 --notes 记录决定理由")
+        if verdict not in {"passed", "human_decision_required"}:
+            raise WorkflowError("独立文章审计结论无效，不能批准 G3")
     if args.decision == "approved" and args.gate == "G4":
         publication_payload = artifact.get("payload", {})
         policy_check = publication_payload.get("policy_check")
@@ -1740,8 +3439,8 @@ def command_approve(args: argparse.Namespace) -> None:
             raise WorkflowError("G4 关联的 content 未通过校验：" + "; ".join(content_errors))
         if content.get("artifact_id") != publication_payload.get("content_artifact_id"):
             raise WorkflowError("publication.content_artifact_id 与本地 content 不一致")
-        if not effective_approval(content, "G3"):
-            raise WorkflowError("G4 前需要关联 content 的当前有效 G3")
+        if not effective_content_approval(content, content_path):
+            raise WorkflowError("G4 前需要关联 content 的当前有效 G3 和匹配的独立文章审计")
         if publication_payload.get("scheduled_at"):
             if inventory.get("status") != "scheduled":
                 raise WorkflowError("定时发布必须关联已排期的内容库存项")
@@ -1813,6 +3512,12 @@ def command_approve(args: argparse.Namespace) -> None:
             parse_window_seconds(window, f"第 {index + 1} 个观察窗口")
         if not measurement_plan.get("trust_metrics"):
             raise WorkflowError("G5 批准前必须明确至少一个 trust_metric")
+    if (
+        args.decision == "approved"
+        and args.gate == "G6"
+        and artifact.get("schema_version") == SCHEMA_VERSION
+    ):
+        require_experiment_positioning_links(find_workspace(path), artifact)
     before = artifact.get("status")
     decision = {
         "gate": args.gate,
@@ -2093,8 +3798,12 @@ def command_register(args: argparse.Namespace) -> None:
     expected_type, required_gate, next_stage = rule
     if artifact.get("artifact_type") != expected_type:
         raise WorkflowError(f"角色 {args.role} 需要 {expected_type}，实际为 {artifact.get('artifact_type')}")
-    if required_gate and not effective_approval(artifact, required_gate):
-        raise WorkflowError(f"登记 {args.role} 前需要有效 {required_gate}")
+    if required_gate:
+        if expected_type == "content":
+            if not effective_content_approval(artifact, artifact_path):
+                raise WorkflowError("登记 content 前需要当前有效 G3 和匹配的独立文章审计")
+        elif not effective_approval(artifact, required_gate):
+            raise WorkflowError(f"登记 {args.role} 前需要有效 {required_gate}")
     if expected_type == "publication" and artifact.get("status") != "published":
         raise WorkflowError("publication 只有 published 后才能登记为完成")
     if expected_type == "inventory_item" and artifact.get("status") not in {"ready", "scheduled"}:
@@ -2104,6 +3813,8 @@ def command_register(args: argparse.Namespace) -> None:
     if expected_type in {"metrics_snapshot", "review"} and not effective_approval(run, "G5"):
         raise WorkflowError(f"登记 {expected_type} 前 run manifest 需要有效 G5")
     root = find_workspace(run_path)
+    if expected_type == "review" and artifact.get("schema_version") == SCHEMA_VERSION:
+        require_review_positioning_links(root, artifact)
     try:
         relative = artifact_path.relative_to(root)
     except ValueError as exc:
@@ -2224,6 +3935,7 @@ def human_value(value: Any) -> str:
         "topic_report_": "选题报告记录",
         "topic_": "选题记录",
         "content_": "内容记录",
+        "article_audit_": "独立审计记录",
         "inventory_": "库存记录",
         "publication_": "发布记录",
         "metrics_": "数据快照记录",
@@ -2307,11 +4019,11 @@ def render_human_value(value: Any, field: str | None = None, depth: int = 0) -> 
 
 
 def status_tone(value: Any) -> str:
-    if value in {"approved", "ready", "published", "completed", "allowed", "available", "validated", "supported"}:
+    if value in {"approved", "ready", "published", "completed", "allowed", "available", "validated", "supported", "provisionally_established", "supportive", "passed", "resolved"}:
         return "positive"
-    if value in {"rejected", "failed", "blocked", "prohibited", "refuted"}:
+    if value in {"rejected", "failed", "blocked", "prohibited", "refuted", "audit_failed", "P0"}:
         return "negative"
-    if value in {"review_required", "unknown", "held", "needs_human", "pending", "inconclusive"}:
+    if value in {"review_required", "unknown", "held", "needs_human", "pending", "testing", "emerging", "under_review", "inconclusive", "not_tested", "insufficient", "concerning", "human_decision_required", "P1"}:
         return "warning"
     return "neutral"
 
@@ -2331,29 +4043,43 @@ def review_gate(artifact: dict[str, Any]) -> str | None:
 def decision_guidance(artifact_type: str) -> str:
     return {
         "run_manifest": "请确认目标账号、可使用的数据来源、登录状态和外部处理范围是否符合预期。",
-        "account_strategy": "请确认账号阶段、内容目标、发布节奏、库存和复盘规则是否符合实际运营意图。",
-        "persona": "请确认账号身份、目标受众、差异化、表达边界，以及试运营验证计划是否可以执行。",
-        "topic_report": "请从候选中明确选择要进入创作的选题，并确认当前证据与局限可以接受。",
-        "content": "请确认标题、正文、图片或视频、事实表述、个人经历和素材权利，修改后需要重新定稿。",
+        "account_strategy": "请确认创作者的 90 天主要结果、长期业务去向、价值、关系姿态、信任与记忆资产，以及账号阶段、内容目标和运营规则是否符合实际。",
+        "persona": "请确认定位问题判断、稳定边界、开放问题、逐项假设和验证计划是否可以执行；这里批准的是当前搜索空间，不代表永久正确。",
+        "topic_report": "请从候选中明确选择要进入创作的选题，并确认它服务的受众任务、定位假设、证据职责和当前局限。",
+        "content": "请先查看独立文章审计的结论与未解决问题，再确认标题、正文、图片或视频、事实表述、个人经历和素材权利。任何内容修改都会使旧审计与定稿确认失效。",
+        "article_audit": "本页是独立审计结果，不代替内容负责人的定稿决定。请根据问题等级修订稿件或记录人工取舍。",
         "publication": "请核对目标账号、最终内容、素材顺序、可见范围，以及立即或定时发布安排。定时发布还需确认时区、最晚允许执行时间和执行方式；本次确认只授权一次发布或排期尝试。",
         "metrics_snapshot": "请核对实际上线时间、观察周期、应采集时间与实际采集时间是否一致，再判断本次数据是否可以进入复盘。",
-        "experiment": "请确认本轮只调整一个主要因素，并接受观察时间、判断指标和停止条件。",
+        "experiment": "请先确认本轮属于探索未知还是受控优化，再核对定位假设、证据维度、有效曝光、内容兑现、观察时间和停止条件。",
     }.get(artifact_type, "请审阅本页信息，并明确选择确认通过、退回修改或暂停处理。")
 
 
-def decision_panel(artifact: dict[str, Any]) -> str:
+def decision_panel(
+    artifact: dict[str, Any],
+    *,
+    content_approval_effective: bool | None = None,
+    article_audit_error: str | None = None,
+) -> str:
     artifact_type = artifact.get("artifact_type", "")
     gate = review_gate(artifact)
-    if gate and effective_approval(artifact, gate):
+    gate_is_effective = effective_approval(artifact, gate) if gate else False
+    if artifact_type == "content" and content_approval_effective is not None:
+        gate_is_effective = content_approval_effective
+    if gate and gate_is_effective:
         state = "当前版本已由内容负责人确认"
         detail = "如内容发生修改，原确认会自动失效，需要重新审阅。"
         tone = "positive"
     elif gate:
         approvals = [item for item in artifact.get("approvals", []) if item.get("gate") == gate]
         last = approvals[-1].get("decision") if approvals else None
-        state = human_value(last) if last else "等待内容负责人决定"
-        detail = decision_guidance(artifact_type)
-        tone = status_tone(last or "review_required")
+        if artifact_type == "content" and last == "approved" and content_approval_effective is False:
+            state = "旧的定稿确认已失效"
+            detail = article_audit_error or "稿件或独立审计已发生变化，需要重新审计并确认。"
+            tone = "warning"
+        else:
+            state = human_value(last) if last else "等待内容负责人决定"
+            detail = decision_guidance(artifact_type)
+            tone = status_tone(last or "review_required")
     else:
         state = "本页用于查看进度与证据"
         detail = "如需推进高影响操作，系统会在对应步骤单独请求人工确认。"
@@ -2427,6 +4153,60 @@ def approvals_html(artifact: dict[str, Any]) -> str:
     return '<section class="report-section"><h2>人工决定记录</h2><div class="timeline">' + "".join(items) + "</div></section>"
 
 
+def linked_article_audit_html(
+    audit: dict[str, Any] | None,
+    error: str | None,
+) -> str:
+    if audit is None:
+        message = error or "尚未完成独立文章审计，不能进入内容定稿。"
+        return (
+            '<section class="report-section audit-callout warning">'
+            '<h2>独立文章审计</h2>'
+            f'<div class="pill warning">需要处理</div><p>{html.escape(message)}</p>'
+            '</section>'
+        )
+
+    payload = audit.get("payload", {})
+    summary = payload.get("summary", {}) if isinstance(payload.get("summary"), dict) else {}
+    verdict = summary.get("verdict")
+    findings = payload.get("findings", []) if isinstance(payload.get("findings"), list) else []
+    open_findings = [
+        item for item in findings
+        if isinstance(item, dict) and item.get("status") == "open"
+    ]
+    finding_cards = []
+    for finding in open_findings:
+        severity = finding.get("severity")
+        finding_cards.append(
+            '<article class="audit-finding">'
+            f'<div class="pill {status_tone(severity)}">{html.escape(human_value(severity))}</div>'
+            f'<h3>{html.escape(str(finding.get("issue") or "未填写问题说明"))}</h3>'
+            f'<p><strong>位置：</strong>{html.escape(str(finding.get("locator") or human_value(finding.get("surface_path"))))}</p>'
+            f'<p><strong>修订方向：</strong>{html.escape(str(finding.get("recommendation") or "未填写"))}</p>'
+            '</article>'
+        )
+    findings_html = (
+        '<div class="audit-findings">' + "".join(finding_cards) + '</div>'
+        if finding_cards
+        else '<p class="muted">没有尚未解决的审计问题。</p>'
+    )
+    risk = payload.get("risk", {}) if isinstance(payload.get("risk"), dict) else {}
+    counts = summary.get("counts", {}) if isinstance(summary.get("counts"), dict) else {}
+    count_text = "、".join(
+        f'{human_value(level)} {counts.get(level, 0)} 项' for level in ("P0", "P1", "P2")
+    )
+    return (
+        '<section class="report-section audit-callout">'
+        '<h2>独立文章审计</h2>'
+        f'<div class="audit-summary"><div class="pill {status_tone(verdict)}">{html.escape(human_value(verdict))}</div>'
+        f'<span>内容风险：{html.escape(human_value(risk.get("level")))}</span>'
+        f'<span>{html.escape(count_text)}</span></div>'
+        f'{findings_html}'
+        '<p class="muted">审计由与写作者不同的 Agent 在全新、只读上下文中完成；结论不代替内容负责人的定稿决定。</p>'
+        '</section>'
+    )
+
+
 def page_style() -> str:
     return """
 :root{color-scheme:light;--ink:#172033;--muted:#6b7280;--line:#e6e8ee;--paper:#fff;--bg:#f3f5f9;--brand:#bf3a55;--brand-soft:#fff0f3;--positive:#17795c;--positive-soft:#eaf8f2;--warning:#9a5b00;--warning-soft:#fff7df;--negative:#b4233d;--negative-soft:#fff0f2}
@@ -2440,6 +4220,7 @@ def page_style() -> str:
 .tag-list{display:flex;flex-wrap:wrap;gap:8px}.tag,.pill{display:inline-flex;align-items:center;padding:5px 10px;border-radius:999px;background:#f1f3f6;font-size:13px}.pill{font-weight:700}.pill.positive{color:var(--positive);background:var(--positive-soft)}.pill.warning{color:var(--warning);background:var(--warning-soft)}.pill.negative{color:var(--negative);background:var(--negative-soft)}.pill.neutral{color:#526077;background:#edf1f7}
 .mini-grid,.source-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;min-width:0}.mini-card,.source-card,.list-card{min-width:0;border:1px solid var(--line);border-radius:16px;background:#fff;padding:15px}.mini-title{font-weight:700;margin-bottom:8px}.mini-body{min-width:0;margin-top:10px;font-size:14px}.item-list{display:grid;gap:12px;min-width:0}.list-card{display:grid;grid-template-columns:30px minmax(0,1fr);gap:10px}.item-number{display:grid;place-items:center;width:26px;height:26px;border-radius:50%;background:var(--brand-soft);color:var(--brand);font-weight:700;font-size:13px}.item-content{min-width:0}.source-card h3{font-size:16px;margin:10px 0 5px}.source-card p{color:var(--muted);font-size:13px;margin:0 0 8px}a{color:#a52643;text-underline-offset:3px}
 .timeline{position:relative}.timeline-item{display:grid;grid-template-columns:20px 1fr;gap:12px;padding-bottom:20px}.timeline-item:last-child{padding-bottom:0}.timeline-dot{width:12px;height:12px;margin-top:7px;border-radius:50%;background:#8290a8;box-shadow:0 0 0 5px #edf1f7}.timeline-dot.positive{background:var(--positive);box-shadow:0 0 0 5px var(--positive-soft)}.timeline-dot.warning{background:#d78a13;box-shadow:0 0 0 5px var(--warning-soft)}.timeline-dot.negative{background:var(--negative);box-shadow:0 0 0 5px var(--negative-soft)}.timeline-title{font-weight:700}.timeline-meta{color:var(--muted);font-size:13px}.timeline-body p{margin:5px 0 0}
+.audit-callout.warning{background:var(--warning-soft);border-color:#f1d795}.audit-summary{display:flex;align-items:center;flex-wrap:wrap;gap:10px 18px;margin-bottom:16px}.audit-findings{display:grid;gap:12px}.audit-finding{padding:16px;border:1px solid var(--line);border-radius:16px;background:#fff}.audit-finding h3{margin:9px 0 5px;font-size:17px}.audit-finding p{margin:4px 0;color:#4b5563}
 details.trace{margin-top:18px;padding:16px 20px;border:1px dashed #cfd5df;border-radius:16px;color:var(--muted);background:rgba(255,255,255,.64)}details.trace summary{cursor:pointer;font-weight:700;color:#526077}.trace-grid{display:grid;grid-template-columns:180px 1fr;gap:7px 14px;margin-top:14px;font-size:13px;overflow-wrap:anywhere}.footer{margin-top:20px;text-align:center;color:var(--muted);font-size:13px}
 @media(max-width:760px){.shell{width:min(100% - 20px,1120px);margin-top:10px}.hero,.report-section{padding:21px}.summary-grid{grid-template-columns:repeat(2,1fr)}.decision-panel{align-items:flex-start;flex-direction:column}.decision-name{min-width:0}.detail-row{grid-template-columns:1fr;gap:4px}.mini-grid,.source-grid{grid-template-columns:1fr}.trace-grid{grid-template-columns:1fr}}
 """
@@ -2447,13 +4228,36 @@ details.trace{margin-top:18px;padding:16px 20px;border:1px dashed #cfd5df;border
 
 def trace_details(artifact: dict[str, Any]) -> str:
     fingerprint = payload_hash(artifact)[:16] + "…"
-    values = (
+    values = [
         ("账号内部标识", artifact.get("account_id")),
         ("记录编号", artifact.get("artifact_id")),
         ("本轮任务编号", artifact.get("run_id")),
         ("数据结构版本", artifact.get("schema_version")),
         ("内容校验指纹", fingerprint),
-    )
+    ]
+    payload = artifact.get("payload", {})
+    if artifact.get("artifact_type") == "content" and isinstance(payload.get("article_audit_ref"), dict):
+        audit_ref = payload["article_audit_ref"]
+        values.extend([
+            ("独立审计记录", audit_ref.get("artifact_id")),
+            ("独立审计位置", audit_ref.get("artifact_path")),
+            ("独立审计指纹", audit_ref.get("payload_sha256")),
+            ("被审稿件指纹", audit_ref.get("content_sha256")),
+        ])
+    if artifact.get("artifact_type") == "article_audit":
+        author = payload.get("author", {}) if isinstance(payload.get("author"), dict) else {}
+        reviewer = payload.get("reviewer", {}) if isinstance(payload.get("reviewer"), dict) else {}
+        values.extend([
+            ("被审稿件", payload.get("content_artifact_id")),
+            ("被审稿件版本", payload.get("content_revision")),
+            ("被审稿件位置", payload.get("target_uri")),
+            ("被审稿件指纹", payload.get("content_sha256")),
+            ("写作者记录", author.get("actor_id")),
+            ("写作上下文", author.get("context_id")),
+            ("独立审计者记录", reviewer.get("actor_id")),
+            ("审计上下文", reviewer.get("context_id")),
+            ("审计模型记录", reviewer.get("model_id")),
+        ])
     rows = "".join(
         f'<div>{html.escape(label)}</div><div>{html.escape(str(value) if value is not None else "未填写")}</div>'
         for label, value in values
@@ -2461,7 +4265,14 @@ def trace_details(artifact: dict[str, Any]) -> str:
     return f'<details class="trace"><summary>查看追溯信息</summary><div class="trace-grid">{rows}</div></details>'
 
 
-def html_render(artifact: dict[str, Any], account_display_name: str | None = None) -> str:
+def html_render(
+    artifact: dict[str, Any],
+    account_display_name: str | None = None,
+    *,
+    linked_article_audit: dict[str, Any] | None = None,
+    article_audit_error: str | None = None,
+    content_approval_effective: bool | None = None,
+) -> str:
     artifact_type = artifact.get("artifact_type", "")
     title = ARTIFACT_LABELS.get(artifact_type, "运营审阅页")
     status = artifact.get("status")
@@ -2484,7 +4295,8 @@ def html_render(artifact: dict[str, Any], account_display_name: str | None = Non
 <body><main class="shell"><header class="hero"><div class="eyebrow">小红书运营工作流 · 人工审阅</div>
 <h1>{html.escape(title)}</h1><p>页面已把内部记录转换为业务语言，供内容负责人判断；页面不展示机器原始数据。</p>
 <div class="summary-grid">{summary_html}</div></header>
-{decision_panel(artifact)}
+{decision_panel(artifact, content_approval_effective=content_approval_effective, article_audit_error=article_audit_error)}
+{linked_article_audit_html(linked_article_audit, article_audit_error) if artifact_type == "content" else ""}
 {payload_sections_html(artifact)}
 {provenance_html(artifact)}
 {approvals_html(artifact)}
@@ -2594,9 +4406,27 @@ def command_render(args: argparse.Namespace) -> None:
         account_display_name = account.get("display_name")
     except WorkflowError:
         pass
+    linked_audit: dict[str, Any] | None = None
+    audit_error: str | None = None
+    content_approval_effective: bool | None = None
+    if artifact.get("artifact_type") == "content":
+        try:
+            linked_audit, _ = load_linked_article_audit(artifact, path)
+        except WorkflowError as exc:
+            audit_error = str(exc)
+        content_approval_effective = effective_content_approval(artifact, path)
     output = Path(args.output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(html_render(artifact, account_display_name), encoding="utf-8")
+    output.write_text(
+        html_render(
+            artifact,
+            account_display_name,
+            linked_article_audit=linked_audit,
+            article_audit_error=audit_error,
+            content_approval_effective=content_approval_effective,
+        ),
+        encoding="utf-8",
+    )
     print(output)
 
 
@@ -2653,6 +4483,15 @@ def build_parser() -> argparse.ArgumentParser:
     validate_workspace = sub.add_parser("validate-workspace", help="校验整个工作区")
     validate_workspace.add_argument("--root", required=True)
     validate_workspace.set_defaults(func=command_validate_workspace)
+
+    link_article_audit = sub.add_parser(
+        "link-article-audit", help="把独立文章审计绑定到冻结 content"
+    )
+    link_article_audit.add_argument("--content", required=True)
+    link_article_audit.add_argument("--audit", required=True)
+    link_article_audit.add_argument("--actor", required=True)
+    link_article_audit.add_argument("--actor-type", choices=["human", "agent"], default="agent")
+    link_article_audit.set_defaults(func=command_link_article_audit)
 
     approve = sub.add_parser("approve", help="记录人工门禁决定")
     approve.add_argument("path")
